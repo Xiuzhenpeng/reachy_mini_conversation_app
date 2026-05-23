@@ -131,6 +131,9 @@ Copy `.env.example` to `.env` when you want to switch backends, provide API keys
 | `GEMINI_API_KEY` | Required for Gemini mode. Also accepts `GOOGLE_API_KEY`. Get one at [aistudio.google.com](https://aistudio.google.com/apikey). |
 | `BACKEND_PROVIDER` | Realtime backend to use: `huggingface` (default), `openai`, or `gemini`. |
 | `MODEL_NAME` | Optional model override for OpenAI Realtime or Gemini Live. Defaults to `gpt-realtime` for OpenAI and `gemini-3.1-flash-live-preview` for Gemini. Hugging Face uses the server's model selection. |
+| `MYSELF_OPENAI_API` | Optional OpenAI-compatible `/v1` chat API base URL for assistant text generation. When set, ASR/TTS still use the selected realtime backend, but text responses come from this endpoint. A host root such as `http://118.191.0.226:26045/` is normalized to `/v1`. |
+| `MYSELF_OPENAI_MODEL` | Optional model name for `MYSELF_OPENAI_API`. If unset, the app tries `/v1/models` and falls back to `local-model`. |
+| `MYSELF_OPENAI_API_KEY` | Optional API key for `MYSELF_OPENAI_API`. Defaults to `DUMMY` for local servers that do not require authentication. |
 | `HF_REALTIME_CONNECTION_MODE` | Hugging Face connection selector: `deployed` uses the built-in Hugging Face server; `local` uses `HF_REALTIME_WS_URL`. Defaults to `deployed`. |
 | `HF_REALTIME_WS_URL` | Direct websocket endpoint for your own Hugging Face backend. Accepts either a base URL like `ws://127.0.0.1:8765/v1` or the full websocket URL `ws://127.0.0.1:8765/v1/realtime`. Used when `HF_REALTIME_CONNECTION_MODE=local`. |
 | `HF_HOME` | Cache directory for local Hugging Face downloads (only used with `--local-vision` flag, defaults to `./cache`). |

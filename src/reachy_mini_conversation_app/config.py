@@ -94,6 +94,9 @@ HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
 HF_LOCAL_CONNECTION_MODE = "local"
 HF_DEPLOYED_CONNECTION_MODE = "deployed"
 HF_REALTIME_SESSION_PROXY_URL = "https://pollen-robotics-reachy-mini-realtime-url.hf.space/session"
+MYSELF_OPENAI_API_ENV = "MYSELF_OPENAI_API"
+MYSELF_OPENAI_API_KEY_ENV = "MYSELF_OPENAI_API_KEY"
+MYSELF_OPENAI_MODEL_ENV = "MYSELF_OPENAI_MODEL"
 
 
 @dataclass(frozen=True)
@@ -366,9 +369,12 @@ class Config:
     HF_HOME = os.getenv("HF_HOME", "./cache")
     LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     HF_TOKEN = os.getenv("HF_TOKEN")  # Optional, falls back to hf auth login if not set
+    MYSELF_OPENAI_API = os.getenv(MYSELF_OPENAI_API_ENV)
+    MYSELF_OPENAI_API_KEY = os.getenv(MYSELF_OPENAI_API_KEY_ENV, "DUMMY")
+    MYSELF_OPENAI_MODEL = os.getenv(MYSELF_OPENAI_MODEL_ENV)
 
     logger.debug(
-        "Backend provider: %s, Model: %s, HF mode: %s, HF session URL set: %s, HF direct URL set: %s, HF_HOME: %s, Vision Model: %s",
+        "Backend provider: %s, Model: %s, HF mode: %s, HF session URL set: %s, HF direct URL set: %s, HF_HOME: %s, Vision Model: %s, Myself text API set: %s",
         BACKEND_PROVIDER,
         MODEL_NAME,
         HF_REALTIME_CONNECTION_MODE,
@@ -376,6 +382,7 @@ class Config:
         bool(HF_REALTIME_WS_URL and HF_REALTIME_WS_URL.strip()),
         HF_HOME,
         LOCAL_VISION_MODEL,
+        bool(MYSELF_OPENAI_API and MYSELF_OPENAI_API.strip()),
     )
 
     # Filesystem root containing profile directories, not a Python import path.
@@ -470,6 +477,9 @@ def refresh_runtime_config_from_env() -> None:
     config.LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
     config.HF_TOKEN = os.getenv("HF_TOKEN")
     config.REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
+    config.MYSELF_OPENAI_API = os.getenv(MYSELF_OPENAI_API_ENV)
+    config.MYSELF_OPENAI_API_KEY = os.getenv(MYSELF_OPENAI_API_KEY_ENV, "DUMMY")
+    config.MYSELF_OPENAI_MODEL = os.getenv(MYSELF_OPENAI_MODEL_ENV)
 
 
 def get_backend_choice(model_name: str | None = None) -> str:
@@ -539,6 +549,17 @@ def get_hf_connection_selection() -> HFConnectionSelection:
 def has_hf_realtime_target() -> bool:
     """Return whether Hugging Face has a target for the selected mode."""
     return get_hf_connection_selection().has_target
+
+
+def get_myself_openai_api() -> str | None:
+    """Return the configured OpenAI-compatible text generation API base URL."""
+    value = (getattr(config, "MYSELF_OPENAI_API", None) or "").strip()
+    return value or None
+
+
+def has_myself_openai_text_generation() -> bool:
+    """Return whether local/OpenAI-compatible text generation is enabled."""
+    return get_myself_openai_api() is not None
 
 
 def is_gemini_model() -> bool:

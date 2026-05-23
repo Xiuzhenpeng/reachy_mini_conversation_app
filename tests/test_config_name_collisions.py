@@ -92,16 +92,25 @@ def test_refresh_runtime_config_reloads_hf_runtime_fields(monkeypatch: pytest.Mo
     monkeypatch.setenv("HF_TOKEN", "hf-runtime-token")
     monkeypatch.setenv("HF_HOME", "/tmp/reachy-hf-cache")
     monkeypatch.setenv("LOCAL_VISION_MODEL", "test/local-vision-model")
+    monkeypatch.setenv("MYSELF_OPENAI_API", "http://118.191.0.226:26045/")
+    monkeypatch.setenv("MYSELF_OPENAI_API_KEY", "myself-runtime-token")
+    monkeypatch.setenv("MYSELF_OPENAI_MODEL", "myself-runtime-model")
 
     monkeypatch.setattr(config_mod.config, "HF_TOKEN", None)
     monkeypatch.setattr(config_mod.config, "HF_HOME", "./old-cache")
     monkeypatch.setattr(config_mod.config, "LOCAL_VISION_MODEL", "old/model")
+    monkeypatch.setattr(config_mod.config, "MYSELF_OPENAI_API", None)
+    monkeypatch.setattr(config_mod.config, "MYSELF_OPENAI_API_KEY", "DUMMY")
+    monkeypatch.setattr(config_mod.config, "MYSELF_OPENAI_MODEL", None)
 
     config_mod.refresh_runtime_config_from_env()
 
     assert config_mod.config.HF_TOKEN == "hf-runtime-token"
     assert config_mod.config.HF_HOME == "/tmp/reachy-hf-cache"
     assert config_mod.config.LOCAL_VISION_MODEL == "test/local-vision-model"
+    assert config_mod.config.MYSELF_OPENAI_API == "http://118.191.0.226:26045/"
+    assert config_mod.config.MYSELF_OPENAI_API_KEY == "myself-runtime-token"
+    assert config_mod.config.MYSELF_OPENAI_MODEL == "myself-runtime-model"
 
 
 @pytest.mark.parametrize(

@@ -13,7 +13,12 @@ from openai.types.realtime import (
 from openai.types.realtime.realtime_audio_formats_param import AudioPCM
 from openai.types.realtime.realtime_audio_input_turn_detection_param import ServerVad
 
-from reachy_mini_conversation_app.config import OPENAI_BACKEND, config, get_default_voice_for_backend
+from reachy_mini_conversation_app.config import (
+    OPENAI_BACKEND,
+    config,
+    get_default_voice_for_backend,
+    has_myself_openai_text_generation,
+)
 from reachy_mini_conversation_app.prompts import get_session_voice, get_session_instructions
 from reachy_mini_conversation_app.base_realtime import BaseRealtimeHandler, to_realtime_tools_config
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies, get_active_tool_specs
@@ -141,7 +146,11 @@ class OpenaiRealtimeHandler(BaseRealtimeHandler):
                 input=RealtimeAudioConfigInputParam(
                     format=AudioPCM(type="audio/pcm", rate=24000),
                     transcription=AudioTranscriptionParam(model="gpt-4o-transcribe", language="en"),
-                    turn_detection=ServerVad(type="server_vad", interrupt_response=True),
+                    turn_detection=ServerVad(
+                        type="server_vad",
+                        interrupt_response=True,
+                        create_response=not has_myself_openai_text_generation(),
+                    ),
                 ),
                 output=RealtimeAudioConfigOutputParam(
                     format=AudioPCM(type="audio/pcm", rate=24000),

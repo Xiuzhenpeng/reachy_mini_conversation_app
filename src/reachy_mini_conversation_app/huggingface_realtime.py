@@ -20,6 +20,7 @@ from reachy_mini_conversation_app.config import (
     get_hf_direct_ws_url,
     parse_hf_realtime_url,
     get_hf_connection_selection,
+    has_myself_openai_text_generation,
 )
 from reachy_mini_conversation_app.prompts import get_session_voice, get_session_instructions
 from reachy_mini_conversation_app.base_realtime import (
@@ -94,7 +95,11 @@ class HuggingFaceRealtimeHandler(BaseRealtimeHandler):
                     # compatible server uses rate=None for native 16 kHz mode.
                     format=_native_rate_audio_pcm(),  # type: ignore[typeddict-item]
                     transcription=AudioTranscriptionParam(model="gpt-4o-transcribe", language="en"),
-                    turn_detection=ServerVad(type="server_vad", interrupt_response=True),
+                    turn_detection=ServerVad(
+                        type="server_vad",
+                        interrupt_response=True,
+                        create_response=not has_myself_openai_text_generation(),
+                    ),
                 ),
                 output=RealtimeAudioConfigOutputParam(
                     format=_native_rate_audio_pcm(),  # type: ignore[typeddict-item]
