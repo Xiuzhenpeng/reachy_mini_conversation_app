@@ -295,6 +295,32 @@ def _merge_stream_tool_call(accumulator: dict[int, dict[str, Any]], delta_tool_c
             function["arguments"] = str(function.get("arguments") or "") + arguments
 
 
+def _debug_log_llm_request(payload: dict[str, Any]) -> None:
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+
+    messages = payload.get("messages") or []
+    tools = payload.get("tools") or []
+    history_count = max(0, len(messages) - 2) if isinstance(messages, list) else 0
+    tool_names: list[str] = []
+    if isinstance(tools, list):
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function")
+            if isinstance(function, dict) and isinstance(function.get("name"), str):
+                tool_names.append(function["name"])
+
+    logger.debug(
+        "LLM request: model=%s stream=%s history_messages=%s tools=%s messages=%s",
+        payload.get("model"),
+        payload.get("stream"),
+        history_count,
+        tool_names,
+        json.dumps(messages, ensure_ascii=False, default=str),
+    )
+
+
 async def _read_chat_completion_stream(
     client: httpx.AsyncClient,
     payload: dict[str, Any],
@@ -334,6 +360,7 @@ async def _read_chat_completion_stream(
 
             content = delta.get("content")
             if isinstance(content, str) and content:
+                logger.debug("LLM stream content delta: %r", content)
                 content_parts.append(content)
                 await on_content(content)
 
@@ -341,6 +368,7 @@ async def _read_chat_completion_stream(
             if isinstance(delta_tool_calls, list):
                 for delta_tool_call in delta_tool_calls:
                     if isinstance(delta_tool_call, dict):
+                        logger.debug("LLM stream tool_call delta: %s", json.dumps(delta_tool_call, ensure_ascii=False))
                         _merge_stream_tool_call(tool_calls, delta_tool_call)
 
     message: dict[str, Any] = {
@@ -349,6 +377,7 @@ async def _read_chat_completion_stream(
     }
     if tool_calls:
         message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
+    logger.debug("LLM stream final message: %s", json.dumps(message, ensure_ascii=False, default=str))
     return message
 
 
@@ -368,6 +397,7 @@ async def _chat_completion_stream_message(
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
+    _debug_log_llm_request(payload)
     try:
         return await _read_chat_completion_stream(client, payload, on_content)
     except RuntimeError as e:
@@ -801,6 +831,7 @@ class SelfHostedOpenAIHandler(ConversationHandler):
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
+        _debug_log_llm_request(payload)
         response = await client.post(
             _endpoint(config.SELF_LLM_BASE_URL, "chat/completions"),
             headers={**_auth_headers(config.SELF_LLM_API_KEY), "Content-Type": "application/json"},
@@ -824,6 +855,7 @@ class SelfHostedOpenAIHandler(ConversationHandler):
         message = choices[0].get("message")
         if not isinstance(message, dict):
             raise RuntimeError(f"LLM choice did not contain a message: {data!r}")
+        logger.debug("LLM non-stream final message: %s", json.dumps(message, ensure_ascii=False, default=str))
         return message
 
     def _tool_call_parts(self, tool_call: Any) -> tuple[str, str, str]:
@@ -841,6 +873,7 @@ class SelfHostedOpenAIHandler(ConversationHandler):
         if not tool_name:
             return {"error": "tool call did not include a function name"}
 
+        logger.debug("Executing tool call: name=%s args=%s", tool_name, args_json)
         await self.output_queue.put(
             AdditionalOutputs({"role": "assistant", "content": f"Used tool {tool_name} with args {args_json}."})
         )
@@ -852,6 +885,7 @@ class SelfHostedOpenAIHandler(ConversationHandler):
 
         if not isinstance(result, dict):
             result = {"result": result}
+        logger.debug("Tool result: name=%s result=%s", tool_name, json.dumps(result, ensure_ascii=False, default=str))
 
         visible_result = _sanitize_tool_result(tool_name, result)
         await self.output_queue.put(
