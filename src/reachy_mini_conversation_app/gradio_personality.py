@@ -84,7 +84,7 @@ class PersonalityUI:
             profile_name = "default" if name == self.DEFAULT_OPTION else name
             target = self._resolve_profile_dir(profile_name) / "tools.txt"
             if target.exists():
-                return target.read_text(encoding="utf-8")
+                return target.read_text(encoding="utf-8-sig")
         except Exception:
             pass
         return ""

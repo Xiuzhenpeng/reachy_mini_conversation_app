@@ -1,1 +1,1 @@
-"""Vision utilities for local image analysis and head tracking."""
+"""Vision utilities for camera head tracking."""

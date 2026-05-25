@@ -2,8 +2,6 @@ import os
 import sys
 import logging
 from pathlib import Path
-from dataclasses import dataclass
-from urllib.parse import urlsplit, parse_qsl, urlunsplit
 from importlib.resources import files
 
 from dotenv import find_dotenv, load_dotenv
@@ -13,6 +11,11 @@ from dotenv import find_dotenv, load_dotenv
 # to that profile and disable all profile switching. Leave as None for normal behavior.
 LOCKED_PROFILE: str | None = None
 PROJECT_ROOT = Path(__file__).parents[2].resolve()
+
+SELF_HOSTED_BACKEND = "self_hosted"
+SELF_HOSTED_BACKEND_LABEL = "Self-hosted OpenAI-compatible"
+
+logger = logging.getLogger(__name__)
 
 
 def _is_source_checkout_root(root: Path) -> bool:
@@ -43,147 +46,9 @@ def _resolve_default_profiles_directory() -> Path:
 
 DEFAULT_PROFILES_DIRECTORY = _resolve_default_profiles_directory()
 
-# Full list of voices supported by the OpenAI Realtime / TTS API.
-# Source: https://developers.openai.com/api/docs/guides/text-to-speech/#voice-options
-# "marin" and "cedar" are recommended for gpt-realtime.
-AVAILABLE_VOICES: list[str] = [
-    "alloy",
-    "ash",
-    "ballad",
-    "cedar",
-    "coral",
-    "echo",
-    "marin",
-    "sage",
-    "shimmer",
-    "verse",
-]
-OPENAI_DEFAULT_VOICE = "cedar"
-
-# Qwen3-TTS CustomVoice speaker catalog from the deployed Hugging Face backend.
-HF_AVAILABLE_VOICES: list[str] = [
-    "Aiden",
-    "Ryan",
-    "Dylan",
-    "Eric",
-    "Ono_Anna",
-    "Serena",
-    "Sohee",
-    "Uncle_Fu",
-    "Vivian",
-]
-
-# Voices supported by the Gemini Live API
-GEMINI_AVAILABLE_VOICES: list[str] = [
-    "Aoede",
-    "Charon",
-    "Fenrir",
-    "Kore",
-    "Leda",
-    "Orus",
-    "Puck",
-    "Zephyr",
-]
-
-OPENAI_BACKEND = "openai"
-GEMINI_BACKEND = "gemini"
-HF_BACKEND = "huggingface"
-DEFAULT_BACKEND_PROVIDER = HF_BACKEND
-HF_REALTIME_CONNECTION_MODE_ENV = "HF_REALTIME_CONNECTION_MODE"
-HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
-HF_LOCAL_CONNECTION_MODE = "local"
-HF_DEPLOYED_CONNECTION_MODE = "deployed"
-HF_REALTIME_SESSION_PROXY_URL = "https://pollen-robotics-reachy-mini-realtime-url.hf.space/session"
-MYSELF_OPENAI_API_ENV = "MYSELF_OPENAI_API"
-MYSELF_OPENAI_API_KEY_ENV = "MYSELF_OPENAI_API_KEY"
-MYSELF_OPENAI_MODEL_ENV = "MYSELF_OPENAI_MODEL"
-
-
-@dataclass(frozen=True)
-class HFBackendDefaults:
-    """Defaults for the Hugging Face realtime backend."""
-
-    connection_mode: str = HF_DEPLOYED_CONNECTION_MODE
-    # App-managed Hugging Face Space proxy. The Space forwards to the current
-    # session allocator, so allocator changes do not require app releases.
-    # Users who need a custom target should use HF_REALTIME_CONNECTION_MODE=local
-    # with HF_REALTIME_WS_URL.
-    session_url: str = HF_REALTIME_SESSION_PROXY_URL
-    voice: str = "Aiden"
-    model_name: str = ""
-    direct_port: int = 8765
-
-
-HF_DEFAULTS = HFBackendDefaults()
-DEFAULT_MODEL_NAME_BY_BACKEND = {
-    OPENAI_BACKEND: "gpt-realtime",
-    GEMINI_BACKEND: "gemini-3.1-flash-live-preview",
-    HF_BACKEND: HF_DEFAULTS.model_name,
-}
-BACKEND_LABEL_BY_PROVIDER = {
-    OPENAI_BACKEND: "OpenAI Realtime",
-    GEMINI_BACKEND: "Gemini Live",
-    HF_BACKEND: "Hugging Face",
-}
-DEFAULT_VOICE_BY_BACKEND = {
-    OPENAI_BACKEND: OPENAI_DEFAULT_VOICE,
-    GEMINI_BACKEND: "Kore",
-    HF_BACKEND: HF_DEFAULTS.voice,
-}
-
-logger = logging.getLogger(__name__)
-
-
-def _is_gemini_model_name(model_name: str | None) -> bool:
-    """Return True when the provided model name targets Gemini."""
-    candidate = (model_name or "").strip().lower()
-    return candidate.startswith("gemini")
-
-
-def _normalize_backend_provider(
-    backend_provider: str | None = None,
-    model_name: str | None = None,
-) -> str:
-    """Normalize the configured backend provider."""
-    candidate = (backend_provider or "").strip().lower()
-    if candidate in DEFAULT_MODEL_NAME_BY_BACKEND:
-        return candidate
-    if candidate:
-        expected = ", ".join(sorted(DEFAULT_MODEL_NAME_BY_BACKEND))
-        raise ValueError(f"Invalid BACKEND_PROVIDER={backend_provider!r}. Expected one of: {expected}.")
-    return GEMINI_BACKEND if _is_gemini_model_name(model_name) else DEFAULT_BACKEND_PROVIDER
-
-
-def _resolve_model_name(
-    backend_provider: str | None = None,
-    model_name: str | None = None,
-) -> str:
-    """Return a model name that matches the selected backend provider."""
-    normalized_backend = _normalize_backend_provider(backend_provider, model_name)
-    if normalized_backend == HF_BACKEND:
-        return DEFAULT_MODEL_NAME_BY_BACKEND[HF_BACKEND]
-
-    candidate = (model_name or "").strip()
-    if candidate:
-        if normalized_backend == GEMINI_BACKEND and _is_gemini_model_name(candidate):
-            return candidate
-        if normalized_backend != GEMINI_BACKEND and not _is_gemini_model_name(candidate):
-            return candidate
-        logger.warning(
-            "MODEL_NAME=%r does not match BACKEND_PROVIDER=%r, using default %r",
-            candidate,
-            normalized_backend,
-            DEFAULT_MODEL_NAME_BY_BACKEND[normalized_backend],
-        )
-    return DEFAULT_MODEL_NAME_BY_BACKEND[normalized_backend]
-
 
 def _env_flag(name: str, default: bool = False) -> bool:
-    """Parse a boolean environment flag.
-
-    Accepted truthy values: 1, true, yes, on
-    Accepted falsy values: 0, false, no, off
-    """
+    """Parse a boolean environment flag."""
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -198,90 +63,40 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return default
 
 
-def _normalize_hf_connection_mode(value: str | None) -> str | None:
-    """Normalize the Hugging Face connection mode, if explicitly configured."""
-    candidate = (value or "").strip().lower()
-    if not candidate:
-        return None
-
-    if candidate not in {HF_LOCAL_CONNECTION_MODE, HF_DEPLOYED_CONNECTION_MODE}:
-        logger.warning(
-            "Invalid %s=%r. Expected local or deployed.",
-            HF_REALTIME_CONNECTION_MODE_ENV,
-            value,
-        )
-        return None
-    return candidate
-
-
-@dataclass(frozen=True)
-class HFConnectionSelection:
-    """Resolved Hugging Face connection mode and target availability."""
-
-    mode: str
-    has_target: bool
-    session_url: str | None = None
-    direct_ws_url: str | None = None
-
-
-@dataclass(frozen=True)
-class HFRealtimeURLParts:
-    """Parsed Hugging Face realtime URL components used by UI and client setup."""
-
-    base_url: str
-    websocket_base_url: str
-    connect_query: dict[str, str]
-    host: str | None
-    port: int | None
-    has_realtime_path: bool
-
-
-def parse_hf_realtime_url(realtime_url: str) -> HFRealtimeURLParts:
-    """Parse a Hugging Face realtime URL into OpenAI-compatible client endpoints."""
-    parsed = urlsplit(realtime_url)
-    scheme = parsed.scheme.lower()
-    if scheme not in {"ws", "wss", "http", "https"}:
-        raise ValueError(
-            "Expected Hugging Face realtime URL to start with ws://, wss://, http://, or https://, "
-            f"got: {realtime_url}"
-        )
-
-    path = parsed.path.rstrip("/")
-    has_realtime_path = path.endswith("/realtime")
-    if has_realtime_path:
-        base_path = path[: -len("/realtime")]
-    else:
-        base_path = path
-
-    connect_query = {key: value for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "model"}
-    http_scheme = "https" if scheme in {"wss", "https"} else "http"
-    websocket_scheme = "wss" if scheme in {"wss", "https"} else "ws"
-    base_url = urlunsplit((http_scheme, parsed.netloc, base_path, "", ""))
-    websocket_base_url = urlunsplit((websocket_scheme, parsed.netloc, base_path, "", ""))
-    return HFRealtimeURLParts(
-        base_url=base_url,
-        websocket_base_url=websocket_base_url,
-        connect_query=connect_query,
-        host=parsed.hostname,
-        port=parsed.port or HF_DEFAULTS.direct_port,
-        has_realtime_path=has_realtime_path,
-    )
-
-
-def parse_hf_direct_target(ws_url: str | None) -> tuple[str | None, int | None]:
-    """Extract host and port from a direct Hugging Face realtime URL."""
-    if not ws_url:
-        return None, None
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
     try:
-        parsed = parse_hf_realtime_url(ws_url)
-        return parsed.host, parsed.port
-    except Exception:
-        return None, None
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid integer value for %s=%r, using default=%s", name, raw, default)
+        return default
 
 
-def build_hf_direct_ws_url(host: str, port: int) -> str:
-    """Build the direct Hugging Face realtime websocket URL used by the app."""
-    return f"ws://{host}:{port}/v1/realtime"
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid float value for %s=%r, using default=%s", name, raw, default)
+        return default
+
+
+def _split_csv(value: str | None) -> list[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
+def normalize_openai_base_url(base_url: str) -> str:
+    """Normalize a root service URL to an OpenAI-compatible /v1 base URL."""
+    candidate = (base_url or "").strip().rstrip("/")
+    if not candidate:
+        raise ValueError("OpenAI-compatible base URL must be non-empty")
+    if candidate.endswith("/v1"):
+        return candidate
+    return f"{candidate}/v1"
 
 
 def _collect_profile_names(profiles_root: Path) -> set[str]:
@@ -319,7 +134,7 @@ def _raise_on_name_collisions(
     )
 
 
-# Validate LOCKED_PROFILE at startup
+# Validate LOCKED_PROFILE at startup.
 if LOCKED_PROFILE is not None:
     _profiles_dir = DEFAULT_PROFILES_DIRECTORY
     _profile_path = _profiles_dir / LOCKED_PROFILE
@@ -336,56 +151,50 @@ _skip_dotenv = _env_flag("REACHY_MINI_SKIP_DOTENV", default=False)
 if _skip_dotenv:
     logger.info("Skipping .env loading because REACHY_MINI_SKIP_DOTENV is set")
 else:
-    # Locate .env file (search upward from current working directory)
     dotenv_path = find_dotenv(usecwd=True)
-
     if dotenv_path:
-        # Load .env and override environment variables
         load_dotenv(dotenv_path=dotenv_path, override=True)
-        logger.info(f"Configuration loaded from {dotenv_path}")
+        logger.info("Configuration loaded from %s", dotenv_path)
     else:
         logger.warning("No .env file found, using environment variables")
 
 
 class Config:
-    """Configuration class for the conversation app."""
+    """Configuration for self-hosted OpenAI-compatible ASR, LLM, and TTS services."""
 
-    # Required (one of these depending on BACKEND_PROVIDER)
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # The key is downloaded in console.py if needed
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-
-    # Optional
-    BACKEND_PROVIDER = _normalize_backend_provider(
-        os.getenv("BACKEND_PROVIDER"),
-        os.getenv("MODEL_NAME"),
+    SELF_OPENAI_BASE_URL = normalize_openai_base_url(
+        os.getenv("SELF_OPENAI_BASE_URL") or os.getenv("OPENAI_COMPATIBLE_BASE_URL") or "http://127.0.0.1:8000"
     )
-    MODEL_NAME = _resolve_model_name(BACKEND_PROVIDER, os.getenv("MODEL_NAME"))
-    HF_REALTIME_CONNECTION_MODE = (
-        _normalize_hf_connection_mode(os.getenv(HF_REALTIME_CONNECTION_MODE_ENV)) or HF_DEFAULTS.connection_mode
-    )
-    # Deliberately ignore HF_REALTIME_SESSION_URL from the environment; the app-managed proxy is HF_DEFAULTS.session_url.
-    HF_REALTIME_SESSION_URL = HF_DEFAULTS.session_url
-    HF_REALTIME_WS_URL = os.getenv(HF_REALTIME_WS_URL_ENV)
-    HF_HOME = os.getenv("HF_HOME", "./cache")
-    LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
-    HF_TOKEN = os.getenv("HF_TOKEN")  # Optional, falls back to hf auth login if not set
-    MYSELF_OPENAI_API = os.getenv(MYSELF_OPENAI_API_ENV)
-    MYSELF_OPENAI_API_KEY = os.getenv(MYSELF_OPENAI_API_KEY_ENV, "DUMMY")
-    MYSELF_OPENAI_MODEL = os.getenv(MYSELF_OPENAI_MODEL_ENV)
+    SELF_OPENAI_API_KEY = os.getenv("SELF_OPENAI_API_KEY", "DUMMY")
 
-    logger.debug(
-        "Backend provider: %s, Model: %s, HF mode: %s, HF session URL set: %s, HF direct URL set: %s, HF_HOME: %s, Vision Model: %s, Myself text API set: %s",
-        BACKEND_PROVIDER,
-        MODEL_NAME,
-        HF_REALTIME_CONNECTION_MODE,
-        bool(HF_REALTIME_SESSION_URL and HF_REALTIME_SESSION_URL.strip()),
-        bool(HF_REALTIME_WS_URL and HF_REALTIME_WS_URL.strip()),
-        HF_HOME,
-        LOCAL_VISION_MODEL,
-        bool(MYSELF_OPENAI_API and MYSELF_OPENAI_API.strip()),
-    )
+    SELF_ASR_BASE_URL = normalize_openai_base_url(os.getenv("SELF_ASR_BASE_URL") or SELF_OPENAI_BASE_URL)
+    SELF_ASR_API_KEY = os.getenv("SELF_ASR_API_KEY") or SELF_OPENAI_API_KEY
+    SELF_ASR_MODEL = os.getenv("SELF_ASR_MODEL", "whisper-1")
+    SELF_ASR_LANGUAGE = os.getenv("SELF_ASR_LANGUAGE", "").strip()
+    SELF_ASR_SAMPLE_RATE = _env_int("SELF_ASR_SAMPLE_RATE", 16000)
 
-    # Filesystem root containing profile directories, not a Python import path.
+    SELF_LLM_BASE_URL = normalize_openai_base_url(os.getenv("SELF_LLM_BASE_URL") or SELF_OPENAI_BASE_URL)
+    SELF_LLM_API_KEY = os.getenv("SELF_LLM_API_KEY") or SELF_OPENAI_API_KEY
+    SELF_LLM_MODEL = os.getenv("SELF_LLM_MODEL", "local-model")
+    SELF_LLM_TEMPERATURE = _env_float("SELF_LLM_TEMPERATURE", 0.7)
+    SELF_LLM_MAX_HISTORY_MESSAGES = _env_int("SELF_LLM_MAX_HISTORY_MESSAGES", 24)
+    SELF_LLM_MAX_TOOL_ROUNDS = _env_int("SELF_LLM_MAX_TOOL_ROUNDS", 4)
+
+    SELF_TTS_BASE_URL = normalize_openai_base_url(os.getenv("SELF_TTS_BASE_URL") or SELF_OPENAI_BASE_URL)
+    SELF_TTS_API_KEY = os.getenv("SELF_TTS_API_KEY") or SELF_OPENAI_API_KEY
+    SELF_TTS_MODEL = os.getenv("SELF_TTS_MODEL", "tts-1")
+    SELF_TTS_VOICE = os.getenv("SELF_TTS_VOICE", "default")
+    SELF_TTS_VOICES = _split_csv(os.getenv("SELF_TTS_VOICES")) or [SELF_TTS_VOICE]
+    SELF_TTS_RESPONSE_FORMAT = os.getenv("SELF_TTS_RESPONSE_FORMAT", "wav").strip().lower() or "wav"
+    SELF_TTS_SAMPLE_RATE = _env_int("SELF_TTS_SAMPLE_RATE", 24000)
+
+    SELF_VAD_START_DBFS = _env_float("SELF_VAD_START_DBFS", -42.0)
+    SELF_VAD_STOP_DBFS = _env_float("SELF_VAD_STOP_DBFS", -50.0)
+    SELF_VAD_MIN_SPEECH_MS = _env_int("SELF_VAD_MIN_SPEECH_MS", 250)
+    SELF_VAD_SILENCE_MS = _env_int("SELF_VAD_SILENCE_MS", 700)
+    SELF_VAD_PRE_ROLL_MS = _env_int("SELF_VAD_PRE_ROLL_MS", 300)
+    SELF_VAD_MAX_UTTERANCE_SECONDS = _env_float("SELF_VAD_MAX_UTTERANCE_SECONDS", 30.0)
+
     _profiles_directory_env = os.getenv("REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY")
     PROFILES_DIRECTORY = Path(_profiles_directory_env) if _profiles_directory_env else DEFAULT_PROFILES_DIRECTORY
     _tools_directory_env = os.getenv("REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY")
@@ -393,10 +202,19 @@ class Config:
     AUTOLOAD_EXTERNAL_TOOLS = _env_flag("AUTOLOAD_EXTERNAL_TOOLS", default=False)
     REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
 
-    logger.debug(f"Custom Profile: {REACHY_MINI_CUSTOM_PROFILE}")
+    logger.debug(
+        "Self-hosted services: asr=%s model=%s, llm=%s model=%s, tts=%s model=%s voice=%s",
+        SELF_ASR_BASE_URL,
+        SELF_ASR_MODEL,
+        SELF_LLM_BASE_URL,
+        SELF_LLM_MODEL,
+        SELF_TTS_BASE_URL,
+        SELF_TTS_MODEL,
+        SELF_TTS_VOICE,
+    )
 
     def __init__(self) -> None:
-        """Initialize the configuration."""
+        """Validate profile and tool roots."""
         if self.REACHY_MINI_CUSTOM_PROFILE and self.PROFILES_DIRECTORY != DEFAULT_PROFILES_DIRECTORY:
             selected_profile_path = self.PROFILES_DIRECTORY / self.REACHY_MINI_CUSTOM_PROFILE
             if not selected_profile_path.is_dir():
@@ -433,26 +251,7 @@ class Config:
                 internal_names=internal_tools,
             )
 
-        if self.PROFILES_DIRECTORY != DEFAULT_PROFILES_DIRECTORY:
-            logger.warning(
-                "Environment variable 'REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY' is set. "
-                "Profiles (instructions.txt, ...) will be loaded from %s.",
-                self.PROFILES_DIRECTORY,
-            )
-        else:
-            logger.info(
-                "'REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY' is not set. Using built-in profiles from %s.",
-                DEFAULT_PROFILES_DIRECTORY,
-            )
-
-        if self.TOOLS_DIRECTORY is not None:
-            logger.warning(
-                "Environment variable 'REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY' is set. "
-                "External tools will be loaded from %s.",
-                self.TOOLS_DIRECTORY,
-            )
-        else:
-            logger.info("'REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY' is not set. Using built-in shared tools only.")
+        logger.info("Using %s services for ASR, LLM, and TTS.", SELF_HOSTED_BACKEND_LABEL)
 
 
 config = Config()
@@ -460,119 +259,69 @@ config = Config()
 
 def refresh_runtime_config_from_env() -> None:
     """Refresh mutable runtime config fields from the current environment."""
-    config.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    config.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    config.BACKEND_PROVIDER = _normalize_backend_provider(
-        os.getenv("BACKEND_PROVIDER"),
-        os.getenv("MODEL_NAME"),
+    config.SELF_OPENAI_BASE_URL = normalize_openai_base_url(
+        os.getenv("SELF_OPENAI_BASE_URL") or os.getenv("OPENAI_COMPATIBLE_BASE_URL") or "http://127.0.0.1:8000"
     )
-    config.MODEL_NAME = _resolve_model_name(config.BACKEND_PROVIDER, os.getenv("MODEL_NAME"))
-    config.HF_REALTIME_CONNECTION_MODE = (
-        _normalize_hf_connection_mode(os.getenv(HF_REALTIME_CONNECTION_MODE_ENV)) or HF_DEFAULTS.connection_mode
-    )
-    # Deliberately ignore HF_REALTIME_SESSION_URL from the environment; the app-managed proxy is HF_DEFAULTS.session_url.
-    config.HF_REALTIME_SESSION_URL = HF_DEFAULTS.session_url
-    config.HF_REALTIME_WS_URL = os.getenv(HF_REALTIME_WS_URL_ENV)
-    config.HF_HOME = os.getenv("HF_HOME", "./cache")
-    config.LOCAL_VISION_MODEL = os.getenv("LOCAL_VISION_MODEL", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
-    config.HF_TOKEN = os.getenv("HF_TOKEN")
+    config.SELF_OPENAI_API_KEY = os.getenv("SELF_OPENAI_API_KEY", "DUMMY")
+
+    config.SELF_ASR_BASE_URL = normalize_openai_base_url(os.getenv("SELF_ASR_BASE_URL") or config.SELF_OPENAI_BASE_URL)
+    config.SELF_ASR_API_KEY = os.getenv("SELF_ASR_API_KEY") or config.SELF_OPENAI_API_KEY
+    config.SELF_ASR_MODEL = os.getenv("SELF_ASR_MODEL", "whisper-1")
+    config.SELF_ASR_LANGUAGE = os.getenv("SELF_ASR_LANGUAGE", "").strip()
+    config.SELF_ASR_SAMPLE_RATE = _env_int("SELF_ASR_SAMPLE_RATE", 16000)
+
+    config.SELF_LLM_BASE_URL = normalize_openai_base_url(os.getenv("SELF_LLM_BASE_URL") or config.SELF_OPENAI_BASE_URL)
+    config.SELF_LLM_API_KEY = os.getenv("SELF_LLM_API_KEY") or config.SELF_OPENAI_API_KEY
+    config.SELF_LLM_MODEL = os.getenv("SELF_LLM_MODEL", "local-model")
+    config.SELF_LLM_TEMPERATURE = _env_float("SELF_LLM_TEMPERATURE", 0.7)
+    config.SELF_LLM_MAX_HISTORY_MESSAGES = _env_int("SELF_LLM_MAX_HISTORY_MESSAGES", 24)
+    config.SELF_LLM_MAX_TOOL_ROUNDS = _env_int("SELF_LLM_MAX_TOOL_ROUNDS", 4)
+
+    config.SELF_TTS_BASE_URL = normalize_openai_base_url(os.getenv("SELF_TTS_BASE_URL") or config.SELF_OPENAI_BASE_URL)
+    config.SELF_TTS_API_KEY = os.getenv("SELF_TTS_API_KEY") or config.SELF_OPENAI_API_KEY
+    config.SELF_TTS_MODEL = os.getenv("SELF_TTS_MODEL", "tts-1")
+    config.SELF_TTS_VOICE = os.getenv("SELF_TTS_VOICE", "default")
+    config.SELF_TTS_VOICES = _split_csv(os.getenv("SELF_TTS_VOICES")) or [config.SELF_TTS_VOICE]
+    config.SELF_TTS_RESPONSE_FORMAT = os.getenv("SELF_TTS_RESPONSE_FORMAT", "wav").strip().lower() or "wav"
+    config.SELF_TTS_SAMPLE_RATE = _env_int("SELF_TTS_SAMPLE_RATE", 24000)
+
+    config.SELF_VAD_START_DBFS = _env_float("SELF_VAD_START_DBFS", -42.0)
+    config.SELF_VAD_STOP_DBFS = _env_float("SELF_VAD_STOP_DBFS", -50.0)
+    config.SELF_VAD_MIN_SPEECH_MS = _env_int("SELF_VAD_MIN_SPEECH_MS", 250)
+    config.SELF_VAD_SILENCE_MS = _env_int("SELF_VAD_SILENCE_MS", 700)
+    config.SELF_VAD_PRE_ROLL_MS = _env_int("SELF_VAD_PRE_ROLL_MS", 300)
+    config.SELF_VAD_MAX_UTTERANCE_SECONDS = _env_float("SELF_VAD_MAX_UTTERANCE_SECONDS", 30.0)
+
     config.REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
-    config.MYSELF_OPENAI_API = os.getenv(MYSELF_OPENAI_API_ENV)
-    config.MYSELF_OPENAI_API_KEY = os.getenv(MYSELF_OPENAI_API_KEY_ENV, "DUMMY")
-    config.MYSELF_OPENAI_MODEL = os.getenv(MYSELF_OPENAI_MODEL_ENV)
 
 
 def get_backend_choice(model_name: str | None = None) -> str:
-    """Return the configured backend family."""
-    if model_name is not None:
-        return _normalize_backend_provider(model_name=model_name)
-    return _normalize_backend_provider(config.BACKEND_PROVIDER, config.MODEL_NAME)
+    """Return the only supported backend family."""
+    return SELF_HOSTED_BACKEND
 
 
-def get_model_name_for_backend(backend: str) -> str:
-    """Return the default model name for a backend selector value."""
-    return DEFAULT_MODEL_NAME_BY_BACKEND[_normalize_backend_provider(backend)]
+def get_model_name_for_backend(backend: str | None = None) -> str:
+    """Return the configured LLM model name."""
+    return config.SELF_LLM_MODEL
 
 
 def get_backend_label(backend: str | None = None) -> str:
-    """Return a human-readable label for a backend selector value."""
-    normalized_backend = get_backend_choice() if backend is None else _normalize_backend_provider(backend)
-    return BACKEND_LABEL_BY_PROVIDER[normalized_backend]
+    """Return a human-readable label for the active backend."""
+    return SELF_HOSTED_BACKEND_LABEL
 
 
 def get_available_voices_for_backend(backend: str | None = None) -> list[str]:
-    """Return the curated voice list for a backend selector value."""
-    normalized_backend = get_backend_choice() if backend is None else _normalize_backend_provider(backend)
-    if normalized_backend == GEMINI_BACKEND:
-        return list(GEMINI_AVAILABLE_VOICES)
-    if normalized_backend == HF_BACKEND:
-        return list(HF_AVAILABLE_VOICES)
-    return list(AVAILABLE_VOICES)
+    """Return the configured TTS voice list."""
+    return list(config.SELF_TTS_VOICES)
 
 
 def get_default_voice_for_backend(backend: str | None = None) -> str:
-    """Return the default voice for a backend selector value."""
-    normalized_backend = get_backend_choice() if backend is None else _normalize_backend_provider(backend)
-    return DEFAULT_VOICE_BY_BACKEND[normalized_backend]
-
-
-def get_hf_session_url() -> str | None:
-    """Return the built-in Hugging Face session proxy URL, if any."""
-    value = (getattr(config, "HF_REALTIME_SESSION_URL", None) or "").strip()
-    return value or None
-
-
-def get_hf_direct_ws_url() -> str | None:
-    """Return the configured direct Hugging Face realtime URL, if any."""
-    value = (getattr(config, "HF_REALTIME_WS_URL", None) or "").strip()
-    return value or None
-
-
-def get_hf_connection_selection() -> HFConnectionSelection:
-    """Resolve the selected Hugging Face connection mode and whether it is usable."""
-    session_url = get_hf_session_url()
-    direct_ws_url = get_hf_direct_ws_url()
-    mode = _normalize_hf_connection_mode(getattr(config, "HF_REALTIME_CONNECTION_MODE", None))
-    if mode is None:
-        raise RuntimeError(f"{HF_REALTIME_CONNECTION_MODE_ENV} must be set to local or deployed.")
-
-    target = direct_ws_url if mode == HF_LOCAL_CONNECTION_MODE else session_url
-
-    return HFConnectionSelection(
-        mode=mode,
-        has_target=bool(target),
-        session_url=session_url,
-        direct_ws_url=direct_ws_url,
-    )
-
-
-def has_hf_realtime_target() -> bool:
-    """Return whether Hugging Face has a target for the selected mode."""
-    return get_hf_connection_selection().has_target
-
-
-def get_myself_openai_api() -> str | None:
-    """Return the configured OpenAI-compatible text generation API base URL."""
-    value = (getattr(config, "MYSELF_OPENAI_API", None) or "").strip()
-    return value or None
-
-
-def has_myself_openai_text_generation() -> bool:
-    """Return whether local/OpenAI-compatible text generation is enabled."""
-    return get_myself_openai_api() is not None
-
-
-def is_gemini_model() -> bool:
-    """Return True if the configured MODEL_NAME is a Gemini Live model."""
-    return get_backend_choice() == GEMINI_BACKEND
+    """Return the configured default TTS voice."""
+    return config.SELF_TTS_VOICE
 
 
 def set_custom_profile(profile: str | None) -> None:
-    """Update the selected custom profile at runtime and expose it via env.
-
-    This ensures modules that read `config` and code that inspects the
-    environment see a consistent value.
-    """
+    """Update the selected custom profile at runtime and expose it via env."""
     if LOCKED_PROFILE is not None:
         return
     try:
@@ -580,12 +329,9 @@ def set_custom_profile(profile: str | None) -> None:
     except Exception:
         pass
     try:
-        import os as _os
-
         if profile:
-            _os.environ["REACHY_MINI_CUSTOM_PROFILE"] = profile
+            os.environ["REACHY_MINI_CUSTOM_PROFILE"] = profile
         else:
-            # Remove to reflect default
-            _os.environ.pop("REACHY_MINI_CUSTOM_PROFILE", None)
+            os.environ.pop("REACHY_MINI_CUSTOM_PROFILE", None)
     except Exception:
         pass

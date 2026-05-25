@@ -2,8 +2,6 @@
 
 dance
 stop_dance
-play_emotion
-stop_emotion
 # camera
 # idle_do_nothing
 # head_tracking

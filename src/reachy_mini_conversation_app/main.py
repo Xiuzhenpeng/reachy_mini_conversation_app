@@ -12,7 +12,6 @@ from pathlib import Path
 import gradio as gr
 from fastapi import FastAPI
 from fastrtc import Stream
-from gradio.utils import get_space
 
 from reachy_mini import ReachyMini, ReachyMiniApp
 from reachy_mini_conversation_app.utils import (
@@ -47,14 +46,8 @@ def run(
     # Putting these dependencies here makes the dashboard faster to load when the conversation app is installed
     from reachy_mini_conversation_app.moves import MovementManager
     from reachy_mini_conversation_app.config import (
-        HF_BACKEND,
-        GEMINI_BACKEND,
-        OPENAI_BACKEND,
-        HF_LOCAL_CONNECTION_MODE,
         config,
-        is_gemini_model,
         get_backend_label,
-        get_hf_connection_selection,
         refresh_runtime_config_from_env,
     )
     from reachy_mini_conversation_app.startup_settings import (
@@ -83,20 +76,13 @@ def run(
         except Exception as e:
             logger.warning("Failed to load startup settings: %s", e)
 
-    if config.BACKEND_PROVIDER == HF_BACKEND:
-        logger.info(
-            "Configured backend provider: %s (%s), connection mode: %s",
-            config.BACKEND_PROVIDER,
-            get_backend_label(config.BACKEND_PROVIDER),
-            get_hf_connection_selection().mode,
-        )
-    else:
-        logger.info(
-            "Configured backend provider: %s (%s), model: %s",
-            config.BACKEND_PROVIDER,
-            get_backend_label(config.BACKEND_PROVIDER),
-            config.MODEL_NAME,
-        )
+    logger.info(
+        "Configured backend: %s | ASR=%s | LLM=%s | TTS=%s",
+        get_backend_label(),
+        config.SELF_ASR_MODEL,
+        config.SELF_LLM_MODEL,
+        config.SELF_TTS_MODEL,
+    )
 
     from reachy_mini_conversation_app.console import LocalStream
     from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
@@ -145,7 +131,7 @@ def run(
         args.gradio = True
 
     try:
-        camera_worker, vision_processor = initialize_camera_and_vision(args, robot)
+        camera_worker = initialize_camera_and_vision(args, robot)
     except CameraVisionInitializationError as e:
         logger.error("Failed to initialize camera/vision: %s", e)
         sys.exit(1)
@@ -161,67 +147,25 @@ def run(
         reachy_mini=robot,
         movement_manager=movement_manager,
         camera_worker=camera_worker,
-        vision_processor=vision_processor,
         head_wobbler=head_wobbler,
     )
     current_file_path = os.path.dirname(os.path.abspath(__file__))
     logger.debug(f"Current file absolute path: {current_file_path}")
-    chatbot = gr.Chatbot(
-        type="messages",
-        resizable=True,
-        avatar_images=(
-            os.path.join(current_file_path, "images", "user_avatar.png"),
-            os.path.join(current_file_path, "images", "reachymini_avatar.png"),
-        ),
-    )
+    user_avatar = os.path.join(current_file_path, "images", "user_avatar.png")
+    robot_avatar = os.path.join(current_file_path, "images", "reachymini_avatar.png")
+    avatar_images = (user_avatar, robot_avatar) if os.path.exists(user_avatar) and os.path.exists(robot_avatar) else None
+    chatbot = gr.Chatbot(type="messages", resizable=True, avatar_images=avatar_images)
     logger.debug(f"Chatbot avatar images: {chatbot.avatar_images}")
 
-    if is_gemini_model():
-        from reachy_mini_conversation_app.gemini_live import GeminiLiveHandler
+    from reachy_mini_conversation_app.self_hosted_openai import SelfHostedOpenAIHandler
 
-        logger.info(
-            "Using %s via GeminiLiveHandler",
-            get_backend_label(config.BACKEND_PROVIDER),
-        )
-        handler = GeminiLiveHandler(
-            deps,
-            gradio_mode=args.gradio,
-            instance_path=instance_path,
-            startup_voice=startup_settings.voice,
-        )
-    elif config.BACKEND_PROVIDER == HF_BACKEND:
-        from reachy_mini_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
-
-        hf_connection_selection = get_hf_connection_selection()
-        transport_label = (
-            "Hugging Face direct websocket"
-            if hf_connection_selection.mode == HF_LOCAL_CONNECTION_MODE and hf_connection_selection.has_target
-            else "Hugging Face session proxy"
-        )
-        logger.info(
-            "Using %s via Hugging Face realtime handler (%s)",
-            get_backend_label(config.BACKEND_PROVIDER),
-            transport_label,
-        )
-        handler = HuggingFaceRealtimeHandler(
-            deps,
-            gradio_mode=args.gradio,
-            instance_path=instance_path,
-            startup_voice=startup_settings.voice,
-        )  # type: ignore[assignment]
-    else:
-        from reachy_mini_conversation_app.openai_realtime import OpenaiRealtimeHandler
-
-        logger.info(
-            "Using %s via OpenAI realtime handler (OpenAI Realtime API)",
-            get_backend_label(config.BACKEND_PROVIDER),
-        )
-        handler = OpenaiRealtimeHandler(
-            deps,
-            gradio_mode=args.gradio,
-            instance_path=instance_path,
-            startup_voice=startup_settings.voice,
-        )  # type: ignore[assignment]
+    logger.info("Using self-hosted OpenAI-compatible ASR/LLM/TTS handler")
+    handler = SelfHostedOpenAIHandler(
+        deps,
+        gradio_mode=args.gradio,
+        instance_path=instance_path,
+        startup_voice=startup_settings.voice,
+    )
 
     stream_manager: gr.Blocks | LocalStream | None = None
 
@@ -231,17 +175,6 @@ def run(
         personality_ui = PersonalityUI()
         personality_ui.create_components()
         additional_inputs: list[Any] = [chatbot, *personality_ui.additional_inputs_ordered()]
-
-        if config.BACKEND_PROVIDER in {OPENAI_BACKEND, GEMINI_BACKEND}:
-            uses_gemini_backend = is_gemini_model()
-            api_key_textbox = gr.Textbox(
-                label="GEMINI_API_KEY" if uses_gemini_backend else "OPENAI API Key",
-                type="password",
-                value=(os.getenv("GEMINI_API_KEY") if uses_gemini_backend else os.getenv("OPENAI_API_KEY"))
-                if not get_space()
-                else "",
-            )
-            additional_inputs.insert(1, api_key_textbox)
 
         stream = Stream(
             handler=handler,

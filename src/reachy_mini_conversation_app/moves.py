@@ -1,7 +1,7 @@
 """Movement system with sequential primary moves and additive secondary moves.
 
 Design overview
-- Primary moves (emotions, dances, goto, breathing) are mutually exclusive and run
+- Primary moves (dances, goto, breathing) are mutually exclusive and run
   sequentially.
 - Secondary moves (speech sway, face tracking) are additive offsets applied on top
   of the current primary pose.

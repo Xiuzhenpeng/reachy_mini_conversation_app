@@ -81,7 +81,7 @@ def read_tools_for(name: str) -> str:
     try:
         profile_name = "default" if name == DEFAULT_OPTION else name
         target = resolve_profile_dir(profile_name) / "tools.txt"
-        return target.read_text(encoding="utf-8") if target.exists() else ""
+        return target.read_text(encoding="utf-8-sig") if target.exists() else ""
     except Exception:
         return ""
 

@@ -17,7 +17,7 @@ QueueItem: TypeAlias = AudioFrame | AdditionalOutputs
 
 
 class ConversationHandler(AsyncStreamHandler, ABC):
-    """Shared app handler contract for realtime conversation backends."""
+    """Shared app handler contract for voice conversation backends."""
 
     deps: ToolDependencies
     output_queue: asyncio.Queue[QueueItem]
@@ -30,12 +30,12 @@ class ConversationHandler(AsyncStreamHandler, ABC):
 
     @abstractmethod
     async def start_up(self) -> None:
-        """Start the realtime handler."""
+        """Start the conversation handler."""
         ...
 
     @abstractmethod
     async def shutdown(self) -> None:
-        """Shut down the realtime handler."""
+        """Shut down the conversation handler."""
         ...
 
     @abstractmethod

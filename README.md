@@ -14,9 +14,7 @@ tags:
 
 # Reachy Mini conversation app
 
-Conversational app for the Reachy Mini robot combining realtime voice backends, vision pipelines, and choreographed motion libraries.
-
-![Reachy Mini Dance](docs/assets/reachy_mini_dance.gif)
+Conversational app for the Reachy Mini robot using self-hosted OpenAI-compatible ASR, chat completions, and TTS services, plus camera tools and choreographed motion.
 
 ## Table of contents
 - [Overview](#overview)
@@ -30,21 +28,17 @@ Conversational app for the Reachy Mini robot combining realtime voice backends, 
 - [License](#license)
 
 ## Overview
-- Real-time audio conversation loop with `fastrtc` for low-latency streaming. Supported backends:
-  - **Hugging Face** - default, using the built-in Hugging Face server or your own local endpoint.
-  - **OpenAI Realtime** (`gpt-realtime`) - requires `OPENAI_API_KEY`.
-  - **Gemini Live** (`gemini-3.1-flash-live-preview`) - requires `GEMINI_API_KEY`.
-- Vision processing uses the selected realtime backend by default (when the camera tool is used), with optional on-device local vision using SmolVLM2 (CPU/GPU/MPS) via `--local-vision`.
-- Layered motion system queues primary moves (dances, emotions, goto poses, breathing) while blending speech-reactive wobble and head-tracking.
+- Turn-based voice loop with local VAD and three self-hosted OpenAI-compatible HTTP calls:
+  - `POST /v1/audio/transcriptions` for ASR.
+  - `POST /v1/chat/completions` for LLM responses and tool calls.
+  - `POST /v1/audio/speech` for TTS.
+- Camera-tool images are forwarded to your configured OpenAI-compatible LLM as multimodal chat content when the assistant asks to inspect a frame.
+- Layered motion system queues primary moves (dances, goto poses, breathing) while blending speech-reactive wobble and head-tracking.
 - Async tool dispatch integrates robot motion, camera capture, and optional head-tracking capabilities through a Gradio web UI with live transcripts.
 
 ## Architecture
 
-The app follows a layered architecture connecting the user, AI services, and robot hardware:
-
-<p align="center">
-  <img src="docs/assets/conversation_app_arch.svg" alt="Architecture Diagram" width="600"/>
-</p>
+The app follows a layered architecture connecting the user, your self-hosted OpenAI-compatible ASR/LLM/TTS services, tool handlers, motion control, camera capture, and robot hardware. The editable Mermaid source is in `docs/scheme.mmd`.
 
 ## Installation
 
@@ -72,10 +66,8 @@ uv sync
 
 **Install optional features:**
 ```bash
-uv sync --extra local_vision         # Local PyTorch/Transformers vision
-uv sync --extra yolo_vision          # YOLO face-detection backend for head tracking
 uv sync --extra mediapipe_vision     # MediaPipe-based head-tracking
-uv sync --extra all_vision           # All vision features
+uv sync --extra all_vision           # All retained vision/head-tracking features
 ```
 
 Combine extras or include dev dependencies:
@@ -96,14 +88,12 @@ pip install -e .
 
 **Install optional features:**
 ```bash
-pip install -e .[local_vision]          # Local vision stack
-pip install -e .[yolo_vision]           # YOLO face-detection backend for head tracking
 pip install -e .[mediapipe_vision]      # MediaPipe-based vision
-pip install -e .[all_vision]            # All vision features
+pip install -e .[all_vision]            # All retained vision/head-tracking features
 pip install -e .[dev]                   # Development tools
 ```
 
-Some wheels (like PyTorch) are large and require compatible CUDA or CPU buildsâ€”make sure your platform matches the binaries pulled in by each extra.
+Some optional wheels are platform-specific, so make sure your platform matches the binaries pulled in by each extra.
 
 </details>
 
@@ -111,77 +101,37 @@ Some wheels (like PyTorch) are large and require compatible CUDA or CPU buildsâ€
 
 | Extra | Purpose | Notes |
 |-------|---------|-------|
-| `local_vision` | Run the local VLM (SmolVLM2) through PyTorch/Transformers | GPU recommended. Ensure compatible PyTorch builds for your platform. |
-| `yolo_vision` | YOLOv11n face detection via `ultralytics` and `supervision` | Used as the `yolo` head-tracking backend. Runs on CPU (default). GPU improves performance. |
 | `mediapipe_vision` | Lightweight landmark tracking with MediaPipe | Works on CPU. Enables `--head-tracker mediapipe`. |
-| `all_vision` | Convenience alias installing every vision extra | Install when you want the flexibility to experiment with every provider. |
+| `all_vision` | Convenience alias for retained vision/head-tracking extras | Currently installs MediaPipe support. |
 | `dev` | Developer tooling (`pytest`, `ruff`, `mypy`) | Development-only dependencies. Use `--group dev` with uv or `[dev]` with pip. |
 
 **Note:** `dev` is a dependency group (not an optional dependency). With uv, use `--group dev`. With pip, use `[dev]`.
 
 ## Configuration
 
-The default setup uses the Hugging Face backend and does not require an API key.
+The app contains only the self-hosted OpenAI-compatible ASR, LLM, and TTS pipeline. Legacy third-party model backends and local third-party model paths have been removed.
 
-Copy `.env.example` to `.env` when you want to switch backends, provide API keys, or point Hugging Face at your own local endpoint.
+Copy `.env.example` to `.env` and point the service URLs at your local or LAN endpoints.
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_API_KEY` | Required for OpenAI Realtime mode. |
-| `GEMINI_API_KEY` | Required for Gemini mode. Also accepts `GOOGLE_API_KEY`. Get one at [aistudio.google.com](https://aistudio.google.com/apikey). |
-| `BACKEND_PROVIDER` | Realtime backend to use: `huggingface` (default), `openai`, or `gemini`. |
-| `MODEL_NAME` | Optional model override for OpenAI Realtime or Gemini Live. Defaults to `gpt-realtime` for OpenAI and `gemini-3.1-flash-live-preview` for Gemini. Hugging Face uses the server's model selection. |
-| `MYSELF_OPENAI_API` | Optional OpenAI-compatible `/v1` chat API base URL for assistant text generation. When set, ASR/TTS still use the selected realtime backend, but text responses come from this endpoint. A host root such as `http://118.191.0.226:26045/` is normalized to `/v1`. |
-| `MYSELF_OPENAI_MODEL` | Optional model name for `MYSELF_OPENAI_API`. If unset, the app tries `/v1/models` and falls back to `local-model`. |
-| `MYSELF_OPENAI_API_KEY` | Optional API key for `MYSELF_OPENAI_API`. Defaults to `DUMMY` for local servers that do not require authentication. |
-| `HF_REALTIME_CONNECTION_MODE` | Hugging Face connection selector: `deployed` uses the built-in Hugging Face server; `local` uses `HF_REALTIME_WS_URL`. Defaults to `deployed`. |
-| `HF_REALTIME_WS_URL` | Direct websocket endpoint for your own Hugging Face backend. Accepts either a base URL like `ws://127.0.0.1:8765/v1` or the full websocket URL `ws://127.0.0.1:8765/v1/realtime`. Used when `HF_REALTIME_CONNECTION_MODE=local`. |
-| `HF_HOME` | Cache directory for local Hugging Face downloads (only used with `--local-vision` flag, defaults to `./cache`). |
-| `HF_TOKEN` | Optional token for Hugging Face access (for gated/private assets). |
-| `LOCAL_VISION_MODEL` | Hugging Face model path for local vision processing (only used with `--local-vision` flag, defaults to `HuggingFaceTB/SmolVLM2-2.2B-Instruct`). |
-
-### Hugging Face Connection Modes
-
-Use the built-in Hugging Face server through the app-managed Space proxy. This is the default for a new install; set it explicitly only when you want to switch back from a saved local endpoint:
+| `SELF_OPENAI_BASE_URL` | Shared OpenAI-compatible `/v1` base URL used by ASR, LLM, and TTS unless overridden. |
+| `SELF_OPENAI_API_KEY` | Shared bearer token. Defaults to `DUMMY` for local servers. |
+| `SELF_ASR_BASE_URL` / `SELF_ASR_API_KEY` / `SELF_ASR_MODEL` | Optional ASR endpoint, token, and model. |
+| `SELF_LLM_BASE_URL` / `SELF_LLM_API_KEY` / `SELF_LLM_MODEL` | Optional chat-completions endpoint, token, and model. |
+| `SELF_TTS_BASE_URL` / `SELF_TTS_API_KEY` / `SELF_TTS_MODEL` | Optional TTS endpoint, token, and model. |
+| `SELF_TTS_VOICE` / `SELF_TTS_VOICES` | Default voice and comma-separated voices exposed in the UI. |
+| `SELF_TTS_RESPONSE_FORMAT` | TTS audio format. Use `wav` or `pcm`; `wav` is the default. |
+| `SELF_VAD_*` | Local VAD thresholds and timing used to decide when to call ASR. |
 
 ```env
-BACKEND_PROVIDER=huggingface
-HF_REALTIME_CONNECTION_MODE=deployed
+SELF_OPENAI_BASE_URL=http://127.0.0.1:8000/v1
+SELF_OPENAI_API_KEY=DUMMY
+SELF_ASR_MODEL=whisper-1
+SELF_LLM_MODEL=local-model
+SELF_TTS_MODEL=tts-1
+SELF_TTS_VOICE=default
 ```
-
-Run your own realtime voice backend using [speech-to-speech](https://github.com/huggingface/speech-to-speech) on the same machine as the conversation app:
-
-```env
-BACKEND_PROVIDER=huggingface
-HF_REALTIME_CONNECTION_MODE=local
-HF_REALTIME_WS_URL=ws://127.0.0.1:8765/v1/realtime
-```
-
-Run your own Hugging Face backend on your laptop and connect to it from Reachy Mini Wireless over the same Wi-Fi network:
-
-```env
-BACKEND_PROVIDER=huggingface
-HF_REALTIME_CONNECTION_MODE=local
-HF_REALTIME_WS_URL=ws://<your-laptop-lan-ip>:8765/v1/realtime
-```
-
-For that LAN setup, make sure the backend listens on an address reachable from the robot, not only on `127.0.0.1`.
-
-If the backend stays bound to loopback on your laptop, you can forward it into the robot over SSH instead:
-
-```bash
-ssh -N -R 8765:127.0.0.1:8765 <robot-user>@<robot-host>
-```
-
-Then set this on the robot:
-
-```env
-BACKEND_PROVIDER=huggingface
-HF_REALTIME_CONNECTION_MODE=local
-HF_REALTIME_WS_URL=ws://127.0.0.1:8765/v1/realtime
-```
-
-When using the headless settings UI, selecting `Hugging Face` lets you choose either the built-in server or a local `host:port` target. The UI writes `HF_REALTIME_CONNECTION_MODE` for you, and the local path writes `HF_REALTIME_WS_URL` with a default of `localhost:8765`.
 
 ## Running the app
 
@@ -194,15 +144,14 @@ reachy-mini-conversation-app
 > [!TIP]
 > Make sure the Reachy Mini daemon is running before launching the app. If you see a `TimeoutError`, it means the daemon isn't started. See [Reachy Mini's SDK](https://github.com/pollen-robotics/reachy_mini/) for setup instructions.
 
-The app runs in console mode by default. Add `--gradio` to launch a web UI at http://127.0.0.1:7860/ (required for simulation mode). Vision and head-tracking options are described in the CLI table below.
+The app runs in console mode by default. Add `--gradio` to launch a web UI at http://127.0.0.1:7860/ (required for simulation mode). Camera and head-tracking options are described in the CLI table below.
 
 ### CLI options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--head-tracker {yolo,mediapipe}` | `None` | Select a head-tracking backend when a camera is available. `yolo` uses a local YOLO face detector, `mediapipe` comes from the `reachy_mini_toolbox` package. Requires the matching optional extra. |
+| `--head-tracker {mediapipe}` | `None` | Enable MediaPipe head tracking when a camera is available. Requires the `mediapipe_vision` extra. |
 | `--no-camera` | `False` | Run without camera capture or head tracking. |
-| `--local-vision` | `False` | Use the local vision model (SmolVLM2) for camera-tool requests instead of the selected realtime backend. Requires `local_vision` extra to be installed. |
 | `--gradio` | `False` | Launch the Gradio web UI. Without this flag, runs in console mode. Required when running in simulation mode. |
 | `--robot-name` | `None` | Optional. Connect to a specific robot by name when running multiple daemons on the same subnet. See [Multiple robots on the same subnet](#advanced-features). |
 | `--debug` | `False` | Enable verbose logging for troubleshooting. |
@@ -213,12 +162,6 @@ The app runs in console mode by default. Add `--gradio` to launch a web UI at ht
 # Run with MediaPipe head tracking
 reachy-mini-conversation-app --head-tracker mediapipe
 
-# Run with the YOLO face-detection backend for head tracking
-reachy-mini-conversation-app --head-tracker yolo
-
-# Run with local vision processing (requires local_vision extra)
-reachy-mini-conversation-app --local-vision
-
 # Audio-only conversation (no camera)
 reachy-mini-conversation-app --no-camera
 
@@ -226,27 +169,18 @@ reachy-mini-conversation-app --no-camera
 reachy-mini-conversation-app --gradio
 ```
 
-> [!WARNING]
-> `--local-vision` is not supported when running the conversation app directly on Reachy Mini Wireless / the Raspberry Pi. For local vision, keep the daemon running on the robot and start the conversation app from your laptop or workstation instead.
-
 ## LLM tools exposed to the assistant
 
 | Tool | Action | Dependencies |
 |------|--------|--------------|
 | `move_head` | Queue a head pose change (left/right/up/down/front). | Core install only. |
-| `camera` | Capture the latest camera frame and analyze it with the selected realtime backend or the local vision model. | Requires camera worker. Uses local vision when `--local-vision` is enabled. |
+| `camera` | Capture the latest camera frame and forward it to the self-hosted LLM as OpenAI-compatible multimodal chat content. | Requires camera worker and an LLM that accepts image input for visual answers. |
 | `head_tracking` | Enable or disable head-tracking offsets (not identity recognition - only detects and tracks head position). | Camera worker with configured head tracker (`--head-tracker`). |
 | `dance` | Queue a dance from `reachy_mini_dances_library`. | Core install only. |
 | `stop_dance` | Clear queued dances. | Core install only. |
-| `play_emotion` | Play a recorded emotion clip via Hugging Face datasets. | Core install only. Uses the default open emotions dataset: [`pollen-robotics/reachy-mini-emotions-library`](https://huggingface.co/datasets/pollen-robotics/reachy-mini-emotions-library). |
-| `stop_emotion` | Clear queued emotions. | Core install only. |
 | `idle_do_nothing` | Explicitly remain idle during an idle turn. Not intended for normal conversation turns. | Core install only. |
 
 ## Advanced features
-
-Built-in motion content is published as open Hugging Face datasets:
-- Emotions: [`pollen-robotics/reachy-mini-emotions-library`](https://huggingface.co/datasets/pollen-robotics/reachy-mini-emotions-library)
-- Dances: [`pollen-robotics/reachy-mini-dances-library`](https://huggingface.co/datasets/pollen-robotics/reachy-mini-dances-library)
 
 <details>
 <summary><b>Custom profiles</b></summary>
@@ -272,7 +206,7 @@ Each placeholder pulls the matching file under `src/reachy_mini_conversation_app
 
 List enabled tools in `tools.txt`, one per line. Prefix with `#` to comment out:
 ```
-play_emotion
+dance
 # move_head
 
 # My custom tool defined locally

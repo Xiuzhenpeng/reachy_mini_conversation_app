@@ -55,7 +55,6 @@ class ToolDependencies:
     movement_manager: Any  # MovementManager from moves.py
     # Optional deps
     camera_worker: Any | None = None  # CameraWorker for frame buffering
-    vision_processor: Any | None = None
     head_wobbler: Any | None = None  # HeadWobbler for audio-reactive motion
     motion_duration_s: float = 1.0
 
@@ -171,7 +170,7 @@ def _load_profile_tools() -> None:
 
     # Read and parse tools.txt
     try:
-        with open(tools_txt_path, "r") as f:
+        with open(tools_txt_path, "r", encoding="utf-8-sig") as f:
             lines = f.readlines()
     except Exception as e:
         logger.error(f"✗ Failed to read tools.txt: {e}")

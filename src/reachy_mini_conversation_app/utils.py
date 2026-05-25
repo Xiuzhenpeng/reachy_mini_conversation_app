@@ -1,18 +1,12 @@
 from __future__ import annotations
-import sys
 import logging
 import argparse
 import warnings
-import subprocess
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from reachy_mini import ReachyMini
 from reachy_mini_conversation_app.camera_worker import CameraWorker
 from reachy_mini_conversation_app.vision.head_tracking import HeadTracker
-
-
-if TYPE_CHECKING:
-    from reachy_mini_conversation_app.vision.local_vision import VisionProcessor
 
 
 class CameraVisionInitializationError(Exception):
@@ -24,20 +18,11 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     parser = argparse.ArgumentParser("Reachy Mini Conversation App")
     parser.add_argument(
         "--head-tracker",
-        choices=["yolo", "mediapipe"],
+        choices=["mediapipe"],
         default=None,
-        help=(
-            "Optional head-tracking backend: yolo uses a local face detector in a subprocess, "
-            "mediapipe uses reachy_mini_toolbox in process. Disabled by default."
-        ),
+        help="Optional head-tracking backend. Disabled by default.",
     )
     parser.add_argument("--no-camera", default=False, action="store_true", help="Disable camera usage")
-    parser.add_argument(
-        "--local-vision",
-        default=False,
-        action="store_true",
-        help="Use local vision model instead of the selected realtime backend vision",
-    )
     parser.add_argument("--gradio", default=False, action="store_true", help="Open gradio interface")
     parser.add_argument("--debug", default=False, action="store_true", help="Enable debug logging")
     parser.add_argument(
@@ -52,67 +37,29 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
 def initialize_camera_and_vision(
     args: argparse.Namespace,
     current_robot: ReachyMini,
-) -> tuple[CameraWorker | None, VisionProcessor | None]:
-    """Initialize camera capture, optional head tracking, and optional local vision."""
+) -> CameraWorker | None:
+    """Initialize camera capture and optional head tracking."""
     camera_worker: Optional[CameraWorker] = None
     head_tracker: HeadTracker | None = None
-    vision_processor: Optional[VisionProcessor] = None
 
     if not args.no_camera:
         if args.head_tracker is not None:
             try:
-                if args.head_tracker == "yolo":
-                    from reachy_mini_conversation_app.vision.head_tracking.yolo_process import (
-                        YoloHeadTrackerProcess,
-                    )
+                from reachy_mini_conversation_app.vision.head_tracking.mediapipe import (
+                    MediapipeHeadTracker,
+                )
 
-                    head_tracker = YoloHeadTrackerProcess()
-                    logging.getLogger(__name__).info("Using yolo head tracker subprocess")
-                else:
-                    from reachy_mini_conversation_app.vision.head_tracking.mediapipe import (
-                        MediapipeHeadTracker,
-                    )
-
-                    head_tracker = MediapipeHeadTracker()
-                    logging.getLogger(__name__).info("Using mediapipe head tracker in process")
+                head_tracker = MediapipeHeadTracker()
+                logging.getLogger(__name__).info("Using mediapipe head tracker in process")
             except Exception as e:
                 raise CameraVisionInitializationError(
                     f"Failed to initialize {args.head_tracker} head tracker: {e}",
                 ) from e
 
         camera_worker = CameraWorker(current_robot, head_tracker)
+        logging.getLogger(__name__).info("Camera tool will send captured frames to the configured LLM when requested.")
 
-        if args.local_vision:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    "from reachy_mini_conversation_app.vision.local_vision import VisionProcessor",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if result.returncode < 0:
-                raise CameraVisionInitializationError(
-                    "Local vision import crashed on this machine. "
-                    "Run without --local-vision or install compatible dependencies.",
-                )
-            try:
-                from reachy_mini_conversation_app.vision.local_vision import initialize_vision_processor
-
-            except ImportError as e:
-                raise CameraVisionInitializationError(
-                    "To use --local-vision, please install the extra dependencies: pip install '.[local_vision]'",
-                ) from e
-
-            vision_processor = initialize_vision_processor()
-        else:
-            logging.getLogger(__name__).info(
-                "Using the selected realtime backend for vision (default). Use --local-vision for local processing.",
-            )
-
-    return camera_worker, vision_processor
+    return camera_worker
 
 
 def setup_logger(debug: bool) -> logging.Logger:
@@ -134,7 +81,6 @@ def setup_logger(debug: bool) -> logging.Logger:
         logging.getLogger("aiortc").setLevel(logging.INFO)
         logging.getLogger("fastrtc").setLevel(logging.INFO)
         logging.getLogger("aioice").setLevel(logging.INFO)
-        logging.getLogger("openai").setLevel(logging.INFO)
         logging.getLogger("websockets").setLevel(logging.INFO)
     else:
         logging.getLogger("aiortc").setLevel(logging.ERROR)

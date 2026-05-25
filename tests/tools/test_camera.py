@@ -40,25 +40,19 @@ async def test_camera_tool_preserves_frame_color_for_uploaded_jpeg() -> None:
 
 
 @pytest.mark.asyncio
-async def test_camera_tool_uses_local_vision_processor_when_available() -> None:
-    """The camera tool should use on-demand local vision when configured."""
+async def test_camera_tool_returns_image_payload_for_llm() -> None:
+    """The camera tool should return an image payload that the self-hosted LLM can inspect."""
     camera_worker = MagicMock()
     camera_worker.get_latest_frame.return_value = np.zeros((32, 32, 3), dtype=np.uint8)
-
-    vision_processor = MagicMock()
-    vision_processor.process_image.return_value = "A red cup on a table."
 
     deps = ToolDependencies(
         reachy_mini=MagicMock(),
         movement_manager=MagicMock(),
         camera_worker=camera_worker,
-        vision_processor=vision_processor,
     )
 
     result = await Camera()(deps, question="What do you see?")
 
-    assert result == {"image_description": "A red cup on a table."}
-    vision_processor.process_image.assert_called_once_with(
-        camera_worker.get_latest_frame.return_value,
-        "What do you see?",
-    )
+    assert result["mime_type"] == "image/jpeg"
+    assert result["question"] == "What do you see?"
+    assert isinstance(result["b64_im"], str)

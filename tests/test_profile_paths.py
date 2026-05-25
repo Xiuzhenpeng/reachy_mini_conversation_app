@@ -24,18 +24,14 @@ from reachy_mini_conversation_app.headless_personality import (
 #
 # Project files (WINDOWS_PATH_BUDGET = 130):
 #   C:\Users\<username(20)>
-#     \.cache\huggingface\hub
-#     \spaces--pollen-robotics--reachy_mini_conversation_app
-#     \snapshots\<commit_hash(40)>\
+#     \some\deep\workspace\snapshot\<commit_hash(40)>\
 #   = 158 characters  =>  101 remaining to 259.
 #   The project root folder is not cloned in the snapshot, so we add it
 #   back to the budget: 101 + len("reachy_mini_conversation_app\") (29) = 130.
 #
 # Wheel files (WINDOWS_WHEEL_PATH_BUDGET = 71):
 #   C:\Users\<username(20)>
-#     \.cache\huggingface\hub
-#     \spaces--pollen-robotics--reachy_mini_conversation_app
-#     \snapshots\<commit_hash(40)>
+#     \some\deep\workspace\snapshot\<commit_hash(40)>
 #     \build\bdist.win-amd64\wheel\
 #   = 186 characters  =>  73 remaining to 259.
 #   In practice the copy fails at 257 because of an intermediate \.\
@@ -108,28 +104,26 @@ def test_gradio_personality_ui_prefills_builtin_default_tools(monkeypatch: pytes
     assert sorted(ui.available_tools_cg.value) == sorted(expected_enabled)
 
 
-def test_session_voice_defaults_follow_selected_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Session voice should fall back to the active backend default."""
-    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
-    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+def test_session_voice_defaults_follow_self_hosted_voice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Session voice should fall back to the configured self-hosted TTS default."""
+    monkeypatch.setattr(config, "SELF_TTS_VOICE", "default")
     monkeypatch.setattr(config, "REACHY_MINI_CUSTOM_PROFILE", None)
 
-    assert prompts_mod.get_session_voice() == "Kore"
+    assert prompts_mod.get_session_voice() == "default"
 
 
 def test_headless_profile_write_defaults_voice_at_call_time(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """New headless profiles should use the currently selected backend default voice."""
-    monkeypatch.setattr(config, "BACKEND_PROVIDER", "gemini")
-    monkeypatch.setattr(config, "MODEL_NAME", "gemini-3.1-flash-live-preview")
+    """New headless profiles should use the current self-hosted default voice."""
+    monkeypatch.setattr(config, "SELF_TTS_VOICE", "default")
     monkeypatch.setattr(headless_mod, "_profiles_root", lambda: tmp_path)
 
     headless_mod._write_profile("runtime_voice_default", "test instructions", "")
 
     voice_file = tmp_path / "user_personalities" / "runtime_voice_default" / "voice.txt"
-    assert voice_file.read_text(encoding="utf-8") == "Kore\n"
+    assert voice_file.read_text(encoding="utf-8") == "default\n"
 
 
 def test_packaged_profiles_win_outside_source_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
