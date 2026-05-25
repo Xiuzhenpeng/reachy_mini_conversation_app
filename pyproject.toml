@@ -16,6 +16,7 @@ dependencies = [
     "fastrtc>=0.0.34",
     "gradio==5.50.1.dev1",
     "httpx",
+    "websockets",
 
     #Environment variables
     "python-dotenv",

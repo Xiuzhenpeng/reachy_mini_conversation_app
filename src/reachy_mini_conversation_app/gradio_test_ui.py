@@ -4,6 +4,7 @@ import os
 import logging
 from pathlib import Path
 from typing import Any
+from collections.abc import AsyncIterator
 
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 
@@ -14,7 +15,13 @@ from numpy.typing import NDArray
 
 from reachy_mini_conversation_app.config import config, refresh_runtime_config_from_env
 from reachy_mini_conversation_app.prompts import get_session_instructions
-from reachy_mini_conversation_app.self_hosted_openai import _auth_headers, _decode_tts_audio, _endpoint
+from reachy_mini_conversation_app.self_hosted_openai import (
+    _auth_headers,
+    _endpoint,
+    _new_http_client,
+    _stream_chat_completion_text,
+    _collect_tts_stream_from_chunks,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -47,7 +54,7 @@ class LocalPipelineTester:
 
     def _client_or_create(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+            self._client = _new_http_client()
         return self._client
 
     async def text_to_reply_and_speech(
@@ -58,10 +65,17 @@ class LocalPipelineTester:
     ) -> tuple[str, tuple[int, NDArray[np.int16]]]:
         user_text = user_text.strip()
         if not user_text:
-            raise gr.Error("请输入文本。")
+            raise gr.Error("Please enter text.")
 
-        reply = await self._generate_reply(user_text)
-        audio = await self._synthesize(reply, voice=voice, language=language)
+        reply_parts: list[str] = []
+
+        async def reply_chunks() -> AsyncIterator[str]:
+            async for chunk in self._stream_generate_reply(user_text):
+                reply_parts.append(chunk)
+                yield chunk
+
+        audio = await self._synthesize(reply_chunks(), voice=voice, language=language)
+        reply = "".join(reply_parts).strip()
         return reply, audio
 
     async def audio_to_transcript_reply_and_speech(
@@ -73,10 +87,17 @@ class LocalPipelineTester:
         audio_path = _coerce_audio_filepath(audio_file)
         transcript = (await self._transcribe_file(audio_path)).strip()
         if not transcript:
-            raise gr.Error("ASR 没有返回 transcript。")
+            raise gr.Error("ASR did not return a transcript.")
 
-        reply = await self._generate_reply(transcript)
-        audio = await self._synthesize(reply, voice=voice, language=language)
+        reply_parts: list[str] = []
+
+        async def reply_chunks() -> AsyncIterator[str]:
+            async for chunk in self._stream_generate_reply(transcript):
+                reply_parts.append(chunk)
+                yield chunk
+
+        audio = await self._synthesize(reply_chunks(), voice=voice, language=language)
+        reply = "".join(reply_parts).strip()
         return transcript, reply, audio
 
     async def _transcribe_file(self, audio_path: Path) -> str:
@@ -108,65 +129,41 @@ class LocalPipelineTester:
         return text
 
     async def _generate_reply(self, user_text: str) -> str:
-        client = self._client_or_create()
-        payload: dict[str, Any] = {
-            "model": config.SELF_LLM_MODEL,
-            "messages": [
-                {"role": "system", "content": get_session_instructions()},
-                {"role": "user", "content": user_text},
-            ],
-            "temperature": config.SELF_LLM_TEMPERATURE,
-            "stream": False,
-        }
-        response = await client.post(
-            _endpoint(config.SELF_LLM_BASE_URL, "chat/completions"),
-            headers={**_auth_headers(config.SELF_LLM_API_KEY), "Content-Type": "application/json"},
-            json=payload,
-        )
-        response.raise_for_status()
-        data = response.json()
-        choices = data.get("choices") or []
-        if not choices:
-            raise RuntimeError(f"LLM response did not contain choices: {data!r}")
-        message = choices[0].get("message")
-        if not isinstance(message, dict):
-            raise RuntimeError(f"LLM choice did not contain a message: {data!r}")
-        content = str(message.get("content") or "").strip()
-        if not content:
-            raise RuntimeError(f"LLM response did not contain content: {data!r}")
-        return content
+        parts: list[str] = []
+        async for chunk in self._stream_generate_reply(user_text):
+            parts.append(chunk)
+        return "".join(parts).strip()
 
-    async def _synthesize(self, text: str, voice: str, language: str) -> tuple[int, NDArray[np.int16]]:
+    async def _stream_generate_reply(self, user_text: str) -> AsyncIterator[str]:
         client = self._client_or_create()
-        payload: dict[str, Any] = {
-            "input": text,
-            "voice": (voice or config.SELF_TTS_VOICE).strip() or config.SELF_TTS_VOICE,
-        }
-        if config.SELF_TTS_MODEL:
-            payload["model"] = config.SELF_TTS_MODEL
-        language = language.strip()
-        if language:
-            payload["language"] = language
-        if config.SELF_TTS_SEND_RESPONSE_FORMAT:
-            payload["response_format"] = config.SELF_TTS_RESPONSE_FORMAT
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": get_session_instructions()},
+            {"role": "user", "content": user_text},
+        ]
+        yielded = False
+        async for chunk in _stream_chat_completion_text(client, messages):
+            yielded = True
+            yield chunk
+        if not yielded:
+            raise RuntimeError("LLM stream did not return content")
 
-        response = await client.post(
-            _endpoint(config.SELF_TTS_BASE_URL, "audio/speech"),
-            headers={**_auth_headers(config.SELF_TTS_API_KEY), "Content-Type": "application/json"},
-            json=payload,
-        )
-        response.raise_for_status()
-        sample_rate, audio = _decode_tts_audio(
-            response.content,
-            config.SELF_TTS_RESPONSE_FORMAT,
-            config.SELF_TTS_SAMPLE_RATE,
+    async def _synthesize(
+        self,
+        text_chunks: AsyncIterator[str],
+        voice: str,
+        language: str,
+    ) -> tuple[int, NDArray[np.int16]]:
+        sample_rate, audio = await _collect_tts_stream_from_chunks(
+            text_chunks,
+            (voice or config.SELF_TTS_VOICE).strip() or config.SELF_TTS_VOICE,
+            language.strip(),
         )
         return sample_rate, audio.reshape(-1)
 
 
 def _coerce_audio_filepath(audio_file: Any) -> Path:
     if audio_file is None:
-        raise gr.Error("请上传音频文件。")
+        raise gr.Error("Please upload an audio file.")
     if isinstance(audio_file, (str, os.PathLike)):
         return Path(audio_file)
     if isinstance(audio_file, dict):
@@ -177,7 +174,7 @@ def _coerce_audio_filepath(audio_file: Any) -> Path:
         first = audio_file[0]
         if isinstance(first, (str, os.PathLike)):
             return Path(first)
-    raise gr.Error("无法读取上传的音频文件路径。")
+    raise gr.Error("Could not read the uploaded audio file path.")
 
 
 def _audio_content_type(audio_path: Path) -> str:

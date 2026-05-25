@@ -11,7 +11,7 @@ flowchart TB
         direction TB
 
         UI["Audio I/O<br/>Gradio microphone or Reachy recorder/player"]:::uiStyle
-        Handler["SelfHostedOpenAIHandler<br/>non-streaming turn pipeline"]:::coreStyle
+        Handler["SelfHostedOpenAIHandler<br/>turn pipeline with streaming TTS"]:::coreStyle
         VAD["Local VAD<br/>pre-roll, speech start/stop, utterance WAV"]:::coreStyle
         History["Conversation state<br/>profile instructions + bounded history"]:::dataStyle
         ToolLoop["Tool-call loop<br/>dispatch, append tool result, retry chat"]:::toolStyle
@@ -21,8 +21,8 @@ flowchart TB
     subgraph LocalServices["Local OpenAI-compatible services"]
         direction TB
         ASR["ASR proxy<br/>POST /v1/audio/transcriptions<br/>localhost:8092"]:::serviceStyle
-        LLM["LLM proxy<br/>POST /v1/chat/completions<br/>stream: false<br/>localhost:8001"]:::serviceStyle
-        TTS["TTS proxy<br/>POST /v1/audio/speech<br/>localhost:8091"]:::serviceStyle
+        LLM["LLM proxy<br/>POST /v1/chat/completions<br/>stream: true<br/>localhost:8001"]:::serviceStyle
+        TTS["TTS proxy<br/>WS /v1/audio/speech/stream<br/>PCM chunks<br/>localhost:8091"]:::serviceStyle
     end
 
     subgraph Tools["Tool layer"]
@@ -76,7 +76,7 @@ flowchart TB
     ToolLoop -- tool result messages --> LLM
 
     Handler -- final assistant text --> TTS
-    TTS -- WAV or raw PCM --> Handler
+    TTS -- WebSocket binary PCM chunks --> Handler
     Handler -- transcript events + audio chunks --> OutputQueue
     OutputQueue -- audio chunks --> UI
     UI -- playback --> Speaker

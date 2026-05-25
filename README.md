@@ -28,17 +28,17 @@ Conversational app for the Reachy Mini robot using self-hosted OpenAI-compatible
 - [License](#license)
 
 ## Overview
-- Turn-based voice loop with local VAD and three self-hosted OpenAI-compatible HTTP calls:
+- Turn-based voice loop with local VAD and self-hosted OpenAI-compatible ASR/LLM/TTS services:
   - `POST /v1/audio/transcriptions` for ASR.
-  - `POST /v1/chat/completions` for LLM responses and tool calls.
-  - `POST /v1/audio/speech` for TTS.
+  - `POST /v1/chat/completions` with `stream=true` for LLM responses and tool calls.
+  - `WS /v1/audio/speech/stream` for streaming TTS PCM chunks.
 - Camera-tool images are forwarded to your configured OpenAI-compatible LLM as multimodal chat content when the assistant asks to inspect a frame.
 - Layered motion system queues primary moves (dances, goto poses, breathing) while blending speech-reactive wobble and head-tracking.
 - Async tool dispatch integrates robot motion, camera capture, and optional head-tracking capabilities through a Gradio web UI with live transcripts.
 
 ## Architecture
 
-The app follows a non-streaming turn pipeline connecting local audio capture, VAD, your self-hosted OpenAI-compatible ASR/LLM/TTS services, tool handlers, motion control, camera capture, and robot hardware. The editable Mermaid source is in `docs/scheme.mmd`.
+The app follows a turn pipeline connecting local audio capture, VAD, your self-hosted OpenAI-compatible ASR/LLM/TTS services, tool handlers, motion control, camera capture, and robot hardware. ASR and LLM are request/response calls; TTS uses WebSocket streaming. The editable Mermaid source is in `docs/scheme.mmd`.
 
 ```mermaid
 flowchart TB
@@ -47,7 +47,7 @@ flowchart TB
     subgraph Runtime["Reachy Mini Conversation App"]
         direction TB
         UI["Audio I/O<br/>Gradio microphone or Reachy recorder/player"]:::uiStyle
-        Handler["SelfHostedOpenAIHandler<br/>non-streaming turn pipeline"]:::coreStyle
+        Handler["SelfHostedOpenAIHandler<br/>turn pipeline with streaming TTS"]:::coreStyle
         VAD["Local VAD<br/>pre-roll, speech start/stop, utterance WAV"]:::coreStyle
         History["Conversation state<br/>profile instructions + bounded history"]:::dataStyle
         ToolLoop["Tool-call loop<br/>dispatch, append tool result, retry chat"]:::toolStyle
@@ -57,8 +57,8 @@ flowchart TB
     subgraph LocalServices["Local OpenAI-compatible services"]
         direction TB
         ASR["ASR proxy<br/>POST /v1/audio/transcriptions<br/>localhost:8092"]:::serviceStyle
-        LLM["LLM proxy<br/>POST /v1/chat/completions<br/>stream: false<br/>localhost:8001"]:::serviceStyle
-        TTS["TTS proxy<br/>POST /v1/audio/speech<br/>localhost:8091"]:::serviceStyle
+        LLM["LLM proxy<br/>POST /v1/chat/completions<br/>stream: true<br/>localhost:8001"]:::serviceStyle
+        TTS["TTS proxy<br/>WS /v1/audio/speech/stream<br/>PCM chunks<br/>localhost:8091"]:::serviceStyle
     end
 
     subgraph Tools["Tool layer"]
@@ -107,7 +107,7 @@ flowchart TB
     BgTools -- completion notification --> ToolLoop
     ToolLoop -- tool result messages --> LLM
     Handler -- final assistant text --> TTS
-    TTS -- WAV or raw PCM --> Handler
+    TTS -- WebSocket binary PCM chunks --> Handler
     Handler -- transcript events + audio chunks --> OutputQueue
     OutputQueue -- audio chunks --> UI
     UI -- playback --> Speaker
@@ -207,8 +207,8 @@ Copy `.env.example` to `.env` and point the service URLs at your local or LAN en
 | `SELF_LLM_BASE_URL` / `SELF_LLM_API_KEY` / `SELF_LLM_MODEL` | Optional chat-completions endpoint, token, and model. |
 | `SELF_TTS_BASE_URL` / `SELF_TTS_API_KEY` / `SELF_TTS_MODEL` | Optional TTS endpoint, token, and model. |
 | `SELF_TTS_VOICE` / `SELF_TTS_VOICES` / `SELF_TTS_LANGUAGE` | Default voice, comma-separated UI voice list, and optional TTS language field. |
-| `SELF_TTS_RESPONSE_FORMAT` | TTS audio format. Use `wav` or `pcm`; `wav` is the default. |
-| `SELF_TTS_SEND_RESPONSE_FORMAT` | Whether to send `response_format` in the TTS JSON request. Defaults to `false` for local proxies that infer WAV output. |
+| `SELF_TTS_RESPONSE_FORMAT` | Legacy REST TTS decode format. The streaming WebSocket path always sends `response_format=pcm`. |
+| `SELF_TTS_SEND_RESPONSE_FORMAT` | Legacy REST TTS flag retained for compatibility with older settings. The streaming WebSocket path ignores it. |
 | `SELF_VAD_*` | Local VAD thresholds and timing used to decide when to call ASR. |
 
 ```env
@@ -267,8 +267,8 @@ The test UI has two tabs:
 
 | Tab | Pipeline |
 |-----|----------|
-| `Text -> LLM -> TTS` | Text input directly calls `/v1/chat/completions`, then `/v1/audio/speech`. |
-| `Audio -> ASR -> LLM -> TTS` | Uploaded audio directly calls `/v1/audio/transcriptions`, then `/v1/chat/completions`, then `/v1/audio/speech`. |
+| `Text -> LLM -> TTS` | Text input streams `/v1/chat/completions` chunks directly into `/v1/audio/speech/stream`. |
+| `Audio -> ASR -> LLM -> TTS` | Uploaded audio calls `/v1/audio/transcriptions`, then streams `/v1/chat/completions` chunks directly into `/v1/audio/speech/stream`. |
 
 ## LLM tools exposed to the assistant
 

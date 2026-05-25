@@ -3759,6 +3759,7 @@ dependencies = [
     { name = "reachy-mini" },
     { name = "reachy-mini-dances-library" },
     { name = "reachy-mini-toolbox" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -3794,6 +3795,7 @@ requires-dist = [
     { name = "reachy-mini", specifier = ">=1.7.1" },
     { name = "reachy-mini-dances-library" },
     { name = "reachy-mini-toolbox" },
+    { name = "websockets" },
 ]
 provides-extras = ["mediapipe-vision", "all-vision"]
 

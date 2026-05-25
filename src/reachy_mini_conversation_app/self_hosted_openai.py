@@ -7,12 +7,15 @@ import wave
 import uuid
 import asyncio
 import logging
+from urllib.parse import urlsplit, urlunsplit
+from collections.abc import Awaitable, Callable, AsyncIterator
 from typing import Any
 from collections import deque
 
 import gradio as gr
 import httpx
 import numpy as np
+import websockets
 from fastrtc import AdditionalOutputs, wait_for_item, audio_to_int16
 from numpy.typing import NDArray
 from scipy.signal import resample
@@ -52,6 +55,20 @@ def _auth_headers(api_key: str | None) -> dict[str, str]:
 
 def _endpoint(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _new_http_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0), trust_env=False)
+
+
+def _websocket_endpoint(base_url: str, path: str) -> str:
+    endpoint = _endpoint(base_url, path)
+    parsed = urlsplit(endpoint)
+    if parsed.scheme == "http":
+        return urlunsplit(("ws", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+    if parsed.scheme == "https":
+        return urlunsplit(("wss", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+    return endpoint
 
 
 def _to_mono_int16(frame: NDArray[Any], input_sample_rate: int, target_sample_rate: int) -> NDArray[np.int16]:
@@ -111,15 +128,294 @@ def _decode_wav_bytes(data: bytes) -> tuple[int, NDArray[np.int16]]:
     return sample_rate, arr.reshape(1, -1)
 
 
-def _decode_tts_audio(data: bytes, response_format: str, fallback_sample_rate: int) -> tuple[int, NDArray[np.int16]]:
-    fmt = response_format.lower()
-    if data[:4] == b"RIFF" or fmt == "wav":
-        return _decode_wav_bytes(data)
-    if fmt == "pcm":
-        return fallback_sample_rate, np.frombuffer(data, dtype=np.int16).reshape(1, -1)
-    raise ValueError(
-        f"unsupported TTS response format {response_format!r}; configure SELF_TTS_RESPONSE_FORMAT=wav or pcm"
-    )
+def _tts_stream_config(voice: str, language: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "session.config",
+        "voice": voice,
+        "response_format": "pcm",
+        "stream_audio": True,
+        "split_granularity": "sentence",
+    }
+    if config.SELF_TTS_MODEL:
+        payload["model"] = config.SELF_TTS_MODEL
+    if language:
+        payload["language"] = language
+    return payload
+
+
+def _text_chunks(text: str, chunk_size: int = 512) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    return [text[index : index + chunk_size] for index in range(0, len(text), chunk_size)]
+
+
+def _decode_stream_audio_chunk(
+    data: bytes,
+    audio_format: str,
+    sample_rate: int,
+    pending_pcm: bytes,
+) -> tuple[tuple[int, NDArray[np.int16]] | None, bytes]:
+    if data[:4] == b"RIFF" or audio_format.lower() == "wav":
+        decoded_sample_rate, decoded_audio = _decode_wav_bytes(data)
+        return (decoded_sample_rate, decoded_audio), b""
+
+    raw = pending_pcm + data
+    usable_size = len(raw) - (len(raw) % 2)
+    if usable_size <= 0:
+        return None, raw
+
+    pcm = np.frombuffer(raw[:usable_size], dtype="<i2").astype(np.int16, copy=False).reshape(1, -1)
+    return (sample_rate, pcm), raw[usable_size:]
+
+
+async def _stream_tts_audio(
+    text: str,
+    voice: str,
+    language: str | None = None,
+) -> AsyncIterator[tuple[int, NDArray[np.int16]]]:
+    async def chunks() -> AsyncIterator[str]:
+        for chunk in _text_chunks(text):
+            yield chunk
+
+    async for sample_rate, audio in _stream_tts_audio_from_chunks(chunks(), voice, language):
+        yield sample_rate, audio
+
+
+async def _stream_tts_audio_from_chunks(
+    text_chunks: AsyncIterator[str],
+    voice: str,
+    language: str | None = None,
+) -> AsyncIterator[tuple[int, NDArray[np.int16]]]:
+    url = _websocket_endpoint(config.SELF_TTS_BASE_URL, "audio/speech/stream")
+    headers = _auth_headers(config.SELF_TTS_API_KEY)
+    connect_kwargs: dict[str, Any] = {"open_timeout": 10, "close_timeout": 10, "max_size": None}
+    if headers:
+        connect_kwargs["additional_headers"] = headers
+
+    current_sample_rate = config.SELF_TTS_SAMPLE_RATE
+    current_format = "pcm"
+    pending_pcm = b""
+
+    async with websockets.connect(url, **connect_kwargs) as websocket:
+        await websocket.send(json.dumps(_tts_stream_config(voice, language)))
+
+        async def send_text() -> None:
+            async for chunk in text_chunks:
+                if chunk:
+                    await websocket.send(json.dumps({"type": "input.text", "text": chunk}, ensure_ascii=False))
+            await websocket.send(json.dumps({"type": "input.done"}))
+
+        sender = asyncio.create_task(send_text(), name="tts-stream-text-sender")
+
+        try:
+            async for message in websocket:
+                if isinstance(message, bytes):
+                    decoded, pending_pcm = _decode_stream_audio_chunk(
+                        message,
+                        current_format,
+                        current_sample_rate,
+                        pending_pcm,
+                    )
+                    if decoded is not None:
+                        yield decoded
+                    continue
+
+                payload = json.loads(message)
+                message_type = payload.get("type")
+                if message_type == "audio.start":
+                    current_sample_rate = int(payload.get("sample_rate") or config.SELF_TTS_SAMPLE_RATE)
+                    current_format = str(payload.get("format") or "pcm")
+                    pending_pcm = b""
+                elif message_type == "audio.done":
+                    if pending_pcm:
+                        logger.warning("Dropping incomplete trailing TTS PCM byte")
+                        pending_pcm = b""
+                elif message_type == "session.done":
+                    break
+                elif message_type == "error":
+                    raise RuntimeError(f"TTS stream error: {payload.get('message') or payload!r}")
+        finally:
+            if not sender.done():
+                sender.cancel()
+            try:
+                await sender
+            except asyncio.CancelledError:
+                pass
+
+
+async def _collect_tts_stream(
+    text: str,
+    voice: str,
+    language: str | None = None,
+) -> tuple[int, NDArray[np.int16]]:
+    async def chunks() -> AsyncIterator[str]:
+        for chunk in _text_chunks(text):
+            yield chunk
+
+    return await _collect_tts_stream_from_chunks(chunks(), voice, language)
+
+
+async def _collect_tts_stream_from_chunks(
+    text_chunks: AsyncIterator[str],
+    voice: str,
+    language: str | None = None,
+) -> tuple[int, NDArray[np.int16]]:
+    chunks: list[NDArray[np.int16]] = []
+    sample_rate = config.SELF_TTS_SAMPLE_RATE
+    async for chunk_sample_rate, audio in _stream_tts_audio_from_chunks(text_chunks, voice, language):
+        sample_rate = chunk_sample_rate
+        chunks.append(audio.reshape(-1))
+
+    if not chunks:
+        raise RuntimeError("TTS stream did not return any audio")
+    return sample_rate, np.concatenate(chunks).astype(np.int16, copy=False).reshape(1, -1)
+
+
+def _merge_stream_tool_call(accumulator: dict[int, dict[str, Any]], delta_tool_call: dict[str, Any]) -> None:
+    index = int(delta_tool_call.get("index") or 0)
+    target = accumulator.setdefault(index, {"type": "function", "function": {"name": "", "arguments": ""}})
+
+    call_id = delta_tool_call.get("id")
+    if isinstance(call_id, str) and call_id:
+        target["id"] = call_id
+
+    call_type = delta_tool_call.get("type")
+    if isinstance(call_type, str) and call_type:
+        target["type"] = call_type
+
+    function_delta = delta_tool_call.get("function")
+    if isinstance(function_delta, dict):
+        function = target.setdefault("function", {"name": "", "arguments": ""})
+        name = function_delta.get("name")
+        if isinstance(name, str):
+            function["name"] = str(function.get("name") or "") + name
+        arguments = function_delta.get("arguments")
+        if isinstance(arguments, str):
+            function["arguments"] = str(function.get("arguments") or "") + arguments
+
+
+async def _read_chat_completion_stream(
+    client: httpx.AsyncClient,
+    payload: dict[str, Any],
+    on_content: Callable[[str], Awaitable[None]],
+) -> dict[str, Any]:
+    response_text = ""
+    content_parts: list[str] = []
+    tool_calls: dict[int, dict[str, Any]] = {}
+
+    async with client.stream(
+        "POST",
+        _endpoint(config.SELF_LLM_BASE_URL, "chat/completions"),
+        headers={**_auth_headers(config.SELF_LLM_API_KEY), "Content-Type": "application/json"},
+        json=payload,
+    ) as response:
+        if response.status_code >= 400:
+            body = await response.aread()
+            response_text = body.decode("utf-8", errors="replace")
+            raise RuntimeError(f"LLM stream request failed with {response.status_code}: {response_text[:500]}")
+
+        async for line in response.aiter_lines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("data:"):
+                line = line.removeprefix("data:").strip()
+            if line == "[DONE]":
+                break
+
+            data = json.loads(line)
+            choices = data.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            if not isinstance(delta, dict):
+                continue
+
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                content_parts.append(content)
+                await on_content(content)
+
+            delta_tool_calls = delta.get("tool_calls") or []
+            if isinstance(delta_tool_calls, list):
+                for delta_tool_call in delta_tool_calls:
+                    if isinstance(delta_tool_call, dict):
+                        _merge_stream_tool_call(tool_calls, delta_tool_call)
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(content_parts),
+    }
+    if tool_calls:
+        message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
+    return message
+
+
+async def _chat_completion_stream_message(
+    client: httpx.AsyncClient,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    on_content: Callable[[str], Awaitable[None]],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": config.SELF_LLM_MODEL,
+        "messages": messages,
+        "temperature": config.SELF_LLM_TEMPERATURE,
+        "stream": True,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    try:
+        return await _read_chat_completion_stream(client, payload, on_content)
+    except RuntimeError as e:
+        if not tools:
+            raise
+        logger.warning("LLM rejected streaming tool schema; retrying without tools: %s", str(e)[:500])
+        payload.pop("tools", None)
+        payload.pop("tool_choice", None)
+        return await _read_chat_completion_stream(client, payload, on_content)
+
+
+async def _stream_chat_completion_text(
+    client: httpx.AsyncClient,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    message_holder: dict[str, Any] | None = None,
+) -> AsyncIterator[str]:
+    queue: asyncio.Queue[str | BaseException | None] = asyncio.Queue()
+
+    async def on_content(content: str) -> None:
+        await queue.put(content)
+
+    async def run_stream() -> None:
+        try:
+            message = await _chat_completion_stream_message(client, messages, tools or [], on_content)
+            if message_holder is not None:
+                message_holder["message"] = message
+            await queue.put(None)
+        except BaseException as e:
+            await queue.put(e)
+
+    task = asyncio.create_task(run_stream(), name="llm-chat-stream")
+    try:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+        await task
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 def _chat_tools(tool_specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -225,7 +521,7 @@ class SelfHostedOpenAIHandler(ConversationHandler):
     async def start_up(self) -> None:
         """Start the handler lifecycle and keep it alive until shutdown."""
         self._stop_event.clear()
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+        self._client = _new_http_client()
         self.tool_manager.start_up(tool_callbacks=[self._handle_tool_notification])
         logger.info(
             "Self-hosted voice pipeline ready: ASR %s/%s, LLM %s/%s, TTS %s/%s voice=%s",
@@ -371,14 +667,21 @@ class SelfHostedOpenAIHandler(ConversationHandler):
                 self.last_activity_time = asyncio.get_event_loop().time()
                 await self.output_queue.put(AdditionalOutputs({"role": "user", "content": transcript}))
 
-                reply = await self._generate_reply(transcript)
+                reply_parts: list[str] = []
+
+                async def reply_chunks() -> AsyncIterator[str]:
+                    async for chunk in self._stream_generate_reply(transcript):
+                        reply_parts.append(chunk)
+                        yield chunk
+
+                async for sample_rate, audio in self._stream_synthesize_chunks(reply_chunks()):
+                    await self._queue_audio(sample_rate, audio)
+
+                reply = "".join(reply_parts)
                 reply = reply.strip()
                 if not reply:
                     return
                 await self.output_queue.put(AdditionalOutputs({"role": "assistant", "content": reply}))
-
-                sample_rate, audio = await self._synthesize(reply)
-                await self._queue_audio(sample_rate, audio)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -389,7 +692,7 @@ class SelfHostedOpenAIHandler(ConversationHandler):
 
     async def _client_or_create(self) -> httpx.AsyncClient:
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+            self._client = _new_http_client()
         return self._client
 
     async def _transcribe(self, pcm: NDArray[np.int16]) -> str:
@@ -415,6 +718,12 @@ class SelfHostedOpenAIHandler(ConversationHandler):
         return text
 
     async def _generate_reply(self, user_text: str) -> str:
+        parts: list[str] = []
+        async for chunk in self._stream_generate_reply(user_text):
+            parts.append(chunk)
+        return "".join(parts)
+
+    async def _stream_generate_reply(self, user_text: str) -> AsyncIterator[str]:
         instructions = get_session_instructions()
         if self._system_instructions != instructions:
             self._history.clear()
@@ -428,7 +737,14 @@ class SelfHostedOpenAIHandler(ConversationHandler):
         tools = _chat_tools(get_active_tool_specs(self.deps))
 
         for round_index in range(config.SELF_LLM_MAX_TOOL_ROUNDS + 1):
-            message = await self._chat_completion(messages, tools)
+            client = await self._client_or_create()
+            message_holder: dict[str, Any] = {}
+            async for chunk in _stream_chat_completion_text(client, messages, tools, message_holder):
+                yield chunk
+
+            message = message_holder.get("message")
+            if not isinstance(message, dict):
+                raise RuntimeError("LLM stream did not return a final message")
             tool_calls = list(message.get("tool_calls") or [])
             content = str(message.get("content") or "").strip()
 
@@ -461,15 +777,17 @@ class SelfHostedOpenAIHandler(ConversationHandler):
                 content = "I used the requested tool."
             if not content:
                 content = "I am ready."
+                yield content
 
             messages.append({"role": "assistant", "content": content})
             self._history = self._trim_history(messages[1:])
-            return content
+            return
 
         fallback = "I used the available tools, but I could not complete a final answer."
+        yield fallback
         messages.append({"role": "assistant", "content": fallback})
         self._history = self._trim_history(messages[1:])
-        return fallback
+        return
 
     async def _chat_completion(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         client = await self._client_or_create()
@@ -554,26 +872,24 @@ class SelfHostedOpenAIHandler(ConversationHandler):
 
         return result
 
-    async def _synthesize(self, text: str) -> tuple[int, NDArray[np.int16]]:
-        client = await self._client_or_create()
-        payload: dict[str, Any] = {
-            "input": text,
-            "voice": self.get_current_voice(),
-        }
-        if config.SELF_TTS_MODEL:
-            payload["model"] = config.SELF_TTS_MODEL
-        if config.SELF_TTS_LANGUAGE:
-            payload["language"] = config.SELF_TTS_LANGUAGE
-        if config.SELF_TTS_SEND_RESPONSE_FORMAT:
-            payload["response_format"] = config.SELF_TTS_RESPONSE_FORMAT
+    async def _stream_synthesize(self, text: str) -> AsyncIterator[tuple[int, NDArray[np.int16]]]:
+        async for sample_rate, audio in _stream_tts_audio(
+            text,
+            self.get_current_voice(),
+            config.SELF_TTS_LANGUAGE,
+        ):
+            yield sample_rate, audio
 
-        response = await client.post(
-            _endpoint(config.SELF_TTS_BASE_URL, "audio/speech"),
-            headers={**_auth_headers(config.SELF_TTS_API_KEY), "Content-Type": "application/json"},
-            json=payload,
-        )
-        response.raise_for_status()
-        return _decode_tts_audio(response.content, config.SELF_TTS_RESPONSE_FORMAT, config.SELF_TTS_SAMPLE_RATE)
+    async def _stream_synthesize_chunks(
+        self,
+        text_chunks: AsyncIterator[str],
+    ) -> AsyncIterator[tuple[int, NDArray[np.int16]]]:
+        async for sample_rate, audio in _stream_tts_audio_from_chunks(
+            text_chunks,
+            self.get_current_voice(),
+            config.SELF_TTS_LANGUAGE,
+        ):
+            yield sample_rate, audio
 
     async def _queue_audio(self, sample_rate: int, audio: NDArray[np.int16]) -> None:
         if audio.size == 0:
