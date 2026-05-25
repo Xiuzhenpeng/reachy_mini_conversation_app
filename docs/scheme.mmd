@@ -5,53 +5,92 @@ config:
     htmlLabels: true
 ---
 flowchart TB
-    User(["<span style='font-size:16px;font-weight:bold;'>User</span><br><span style='font-size:13px;color:#01579b;'>Person interacting with system</span>"]) 
-      -- audio stream --> 
-    UI@{ label: "<span style='font-size:16px;font-weight:bold;'>UI Layer</span><br><span style='font-size:13px;color:#0277bd;'>Gradio/Console</span>" }
+    User(["User<br/>speaks and listens"]):::userStyle
 
-    UI -- audio stream --> 
-    Backend@{ label: "<span style='font-size:16px;font-weight:bold;'>Self-hosted OpenAI-compatible Services</span><br><span style='font-size:12px; color:#7b1fa2;'>ASR + LLM + TTS</span>" }
+    subgraph Runtime["Reachy Mini Conversation App"]
+        direction TB
 
-    Backend -- audio stream --> 
-    Motion@{ label: "<span style='font-size:16px;font-weight:bold;'>Motion Control</span><br><span style='font-size:13px;color:#f57f17;'>Audio Sync + Tracking</span>" }
-    
-    Backend -- tool calls --> 
-    Handlers@{ label: "<span style='font-size:16px;font-weight:bold;'>Tool Layer</span><br><span style='font-size:12px;color:#f9a825;'>Built-in tools + profile-local tools<br/>+ external tools (optional)</span>" }
+        UI["Audio I/O<br/>Gradio microphone or Reachy recorder/player"]:::uiStyle
+        Handler["SelfHostedOpenAIHandler<br/>non-streaming turn pipeline"]:::coreStyle
+        VAD["Local VAD<br/>pre-roll, speech start/stop, utterance WAV"]:::coreStyle
+        History["Conversation state<br/>profile instructions + bounded history"]:::dataStyle
+        ToolLoop["Tool-call loop<br/>dispatch, append tool result, retry chat"]:::toolStyle
+        OutputQueue["Output queue<br/>transcripts + 200 ms audio chunks"]:::coreStyle
+    end
 
-    Profiles@{ label: "<span style='font-size:16px;font-weight:bold;'>Selected Profile</span><br><span style='font-size:12px;color:#6a1b9a;'>built-in or external<br/>instructions.txt + tools.txt</span>" }
+    subgraph LocalServices["Local OpenAI-compatible services"]
+        direction TB
+        ASR["ASR proxy<br/>POST /v1/audio/transcriptions<br/>localhost:8092"]:::serviceStyle
+        LLM["LLM proxy<br/>POST /v1/chat/completions<br/>stream: false<br/>localhost:8001"]:::serviceStyle
+        TTS["TTS proxy<br/>POST /v1/audio/speech<br/>localhost:8091"]:::serviceStyle
+    end
 
-    Profiles -- defines enabled tools --> Handlers
+    subgraph Tools["Tool layer"]
+        direction TB
+        Dispatcher["Core/profile/external tool dispatcher"]:::toolStyle
+        CameraTool["camera tool<br/>latest JPEG as base64"]:::toolStyle
+        MotionTools["motion tools<br/>dance, move_head, head_tracking"]:::toolStyle
+        BgTools["background tool manager<br/>long-running system tools"]:::toolStyle
+    end
 
-    Handlers -- movement 
-    requests --> Motion
+    subgraph Robot["Reachy Mini hardware + workers"]
+        direction TB
+        CameraWorker["CameraWorker<br/>frame buffer + optional MediaPipe tracking"]:::hardwareStyle
+        Movement["MovementManager<br/>queued moves + tracking offsets"]:::hardwareStyle
+        Wobbler["HeadWobbler<br/>speech-reactive motion"]:::hardwareStyle
+        Speaker["Speaker / player"]:::hardwareStyle
+        Microphone["Microphone / recorder"]:::hardwareStyle
+    end
 
-    Handlers -- camera frames, head tracking --> 
-    Camera@{ label: "<span style='font-size:16px;font-weight:bold;'>Camera Worker</span><br><span style='font-size:13px;color:#f57f17;'>Frame Buffer + Head Tracking</span>" }
-    
-    Handlers -. image for 
-    analysis .-> Backend
+    subgraph Config["Configuration"]
+        direction TB
+        Env[".env / settings UI<br/>SELF_ASR_* SELF_LLM_* SELF_TTS_*"]:::dataStyle
+        Profiles["profiles/*<br/>instructions.txt + tools.txt"]:::dataStyle
+    end
 
-    Camera -- head tracking --> Motion
+    User -- voice --> Microphone
+    Microphone -- PCM frames --> UI
+    UI -- audio frames --> Handler
+    Handler -- normalize mono int16 --> VAD
+    VAD -- completed utterance WAV --> ASR
+    ASR -- transcript text --> Handler
 
-    Robot@{ label: "<span style='font-size:16px;font-weight:bold;'>reachy_mini</span><br><span style='font-size:13px;color:#c62828;'>Robot Control Library</span>" } 
-    -- camera 
-    frames --> Camera
+    Env -. endpoint/model/voice config .-> Handler
+    Profiles -. system prompt + enabled tools .-> History
+    Handler -- user transcript + history --> History
+    History -- messages JSON --> LLM
+    LLM -- assistant text or tool_calls --> Handler
 
-    Motion -- commands --> Robot
+    Handler -- tool_calls --> ToolLoop
+    ToolLoop --> Dispatcher
+    Dispatcher --> CameraTool
+    Dispatcher --> MotionTools
+    Dispatcher --> BgTools
 
-    Handlers -- results --> Backend
+    CameraWorker -- latest frame --> CameraTool
+    CameraTool -- sanitized tool result --> ToolLoop
+    CameraTool -. image_url data URI for visual question .-> LLM
 
-     User:::userStyle
-     UI:::uiStyle
-     Backend:::aiStyle
-     Motion:::coreStyle
-     Profiles:::toolStyle
-     Handlers:::toolStyle
-     Camera:::coreStyle
-     Robot:::hardwareStyle
-    classDef userStyle fill:#e1f5fe,stroke:#01579b,stroke-width:3px
+    MotionTools -- movement requests --> Movement
+    BgTools -- completion notification --> ToolLoop
+    ToolLoop -- tool result messages --> LLM
+
+    Handler -- final assistant text --> TTS
+    TTS -- WAV or raw PCM --> Handler
+    Handler -- transcript events + audio chunks --> OutputQueue
+    OutputQueue -- audio chunks --> UI
+    UI -- playback --> Speaker
+    Speaker -- sound --> User
+
+    Handler -- speech PCM for animation --> Wobbler
+    Wobbler -- speech offsets --> Movement
+    CameraWorker -- tracking offsets --> Movement
+    Movement -- motor commands --> RobotBody["Robot motors<br/>head, antennas, body yaw"]:::hardwareStyle
+
+    classDef userStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
     classDef uiStyle fill:#b3e5fc,stroke:#0277bd,stroke-width:2px
-    classDef aiStyle fill:#e1bee7,stroke:#7b1fa2,stroke-width:3px
     classDef coreStyle fill:#fff9c4,stroke:#f57f17,stroke-width:2px
-    classDef hardwareStyle fill:#ef9a9a,stroke:#c62828,stroke-width:3px
-    classDef toolStyle fill:#fffde7,stroke:#f9a825,stroke-width:1px
+    classDef serviceStyle fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px
+    classDef toolStyle fill:#fffde7,stroke:#f9a825,stroke-width:2px
+    classDef hardwareStyle fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    classDef dataStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px

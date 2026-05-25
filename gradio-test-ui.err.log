@@ -1,0 +1,2 @@
+2026-05-25 16:22:25,500 INFO httpx:1025 | HTTP Request: GET http://127.0.0.1:7861/gradio_api/startup-events "HTTP/1.1 200 OK"
+2026-05-25 16:22:25,525 INFO httpx:1025 | HTTP Request: HEAD http://127.0.0.1:7861/ "HTTP/1.1 200 OK"

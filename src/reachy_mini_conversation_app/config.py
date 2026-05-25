@@ -169,7 +169,7 @@ class Config:
 
     SELF_ASR_BASE_URL = normalize_openai_base_url(os.getenv("SELF_ASR_BASE_URL") or SELF_OPENAI_BASE_URL)
     SELF_ASR_API_KEY = os.getenv("SELF_ASR_API_KEY") or SELF_OPENAI_API_KEY
-    SELF_ASR_MODEL = os.getenv("SELF_ASR_MODEL", "whisper-1")
+    SELF_ASR_MODEL = os.getenv("SELF_ASR_MODEL", "whisper-1").strip()
     SELF_ASR_LANGUAGE = os.getenv("SELF_ASR_LANGUAGE", "").strip()
     SELF_ASR_SAMPLE_RATE = _env_int("SELF_ASR_SAMPLE_RATE", 16000)
 
@@ -182,10 +182,12 @@ class Config:
 
     SELF_TTS_BASE_URL = normalize_openai_base_url(os.getenv("SELF_TTS_BASE_URL") or SELF_OPENAI_BASE_URL)
     SELF_TTS_API_KEY = os.getenv("SELF_TTS_API_KEY") or SELF_OPENAI_API_KEY
-    SELF_TTS_MODEL = os.getenv("SELF_TTS_MODEL", "tts-1")
+    SELF_TTS_MODEL = os.getenv("SELF_TTS_MODEL", "tts-1").strip()
     SELF_TTS_VOICE = os.getenv("SELF_TTS_VOICE", "default")
     SELF_TTS_VOICES = _split_csv(os.getenv("SELF_TTS_VOICES")) or [SELF_TTS_VOICE]
+    SELF_TTS_LANGUAGE = os.getenv("SELF_TTS_LANGUAGE", "").strip()
     SELF_TTS_RESPONSE_FORMAT = os.getenv("SELF_TTS_RESPONSE_FORMAT", "wav").strip().lower() or "wav"
+    SELF_TTS_SEND_RESPONSE_FORMAT = _env_flag("SELF_TTS_SEND_RESPONSE_FORMAT", default=False)
     SELF_TTS_SAMPLE_RATE = _env_int("SELF_TTS_SAMPLE_RATE", 24000)
 
     SELF_VAD_START_DBFS = _env_float("SELF_VAD_START_DBFS", -42.0)
@@ -266,7 +268,7 @@ def refresh_runtime_config_from_env() -> None:
 
     config.SELF_ASR_BASE_URL = normalize_openai_base_url(os.getenv("SELF_ASR_BASE_URL") or config.SELF_OPENAI_BASE_URL)
     config.SELF_ASR_API_KEY = os.getenv("SELF_ASR_API_KEY") or config.SELF_OPENAI_API_KEY
-    config.SELF_ASR_MODEL = os.getenv("SELF_ASR_MODEL", "whisper-1")
+    config.SELF_ASR_MODEL = os.getenv("SELF_ASR_MODEL", "whisper-1").strip()
     config.SELF_ASR_LANGUAGE = os.getenv("SELF_ASR_LANGUAGE", "").strip()
     config.SELF_ASR_SAMPLE_RATE = _env_int("SELF_ASR_SAMPLE_RATE", 16000)
 
@@ -279,10 +281,12 @@ def refresh_runtime_config_from_env() -> None:
 
     config.SELF_TTS_BASE_URL = normalize_openai_base_url(os.getenv("SELF_TTS_BASE_URL") or config.SELF_OPENAI_BASE_URL)
     config.SELF_TTS_API_KEY = os.getenv("SELF_TTS_API_KEY") or config.SELF_OPENAI_API_KEY
-    config.SELF_TTS_MODEL = os.getenv("SELF_TTS_MODEL", "tts-1")
+    config.SELF_TTS_MODEL = os.getenv("SELF_TTS_MODEL", "tts-1").strip()
     config.SELF_TTS_VOICE = os.getenv("SELF_TTS_VOICE", "default")
     config.SELF_TTS_VOICES = _split_csv(os.getenv("SELF_TTS_VOICES")) or [config.SELF_TTS_VOICE]
+    config.SELF_TTS_LANGUAGE = os.getenv("SELF_TTS_LANGUAGE", "").strip()
     config.SELF_TTS_RESPONSE_FORMAT = os.getenv("SELF_TTS_RESPONSE_FORMAT", "wav").strip().lower() or "wav"
+    config.SELF_TTS_SEND_RESPONSE_FORMAT = _env_flag("SELF_TTS_SEND_RESPONSE_FORMAT", default=False)
     config.SELF_TTS_SAMPLE_RATE = _env_int("SELF_TTS_SAMPLE_RATE", 24000)
 
     config.SELF_VAD_START_DBFS = _env_float("SELF_VAD_START_DBFS", -42.0)

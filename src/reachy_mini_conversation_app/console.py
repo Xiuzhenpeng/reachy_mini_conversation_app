@@ -195,7 +195,9 @@ class LocalStream:
             "tts_model": config.SELF_TTS_MODEL,
             "tts_voice": config.SELF_TTS_VOICE,
             "tts_voices": config.SELF_TTS_VOICES,
+            "tts_language": config.SELF_TTS_LANGUAGE,
             "tts_response_format": config.SELF_TTS_RESPONSE_FORMAT,
+            "tts_send_response_format": config.SELF_TTS_SEND_RESPONSE_FORMAT,
         }
 
     def _init_settings_ui_if_needed(self) -> None:
@@ -244,7 +246,9 @@ class LocalStream:
                 "self_tts_model": "SELF_TTS_MODEL",
                 "self_tts_voice": "SELF_TTS_VOICE",
                 "self_tts_voices": "SELF_TTS_VOICES",
+                "self_tts_language": "SELF_TTS_LANGUAGE",
                 "self_tts_response_format": "SELF_TTS_RESPONSE_FORMAT",
+                "self_tts_send_response_format": "SELF_TTS_SEND_RESPONSE_FORMAT",
             }
             try:
                 raw = await request.json()

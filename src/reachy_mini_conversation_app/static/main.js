@@ -35,7 +35,9 @@ function fillServiceForm(status) {
   document.getElementById("self-tts-model").value = status.tts_model || "";
   document.getElementById("self-tts-voice").value = status.tts_voice || "";
   document.getElementById("self-tts-voices").value = Array.isArray(status.tts_voices) ? status.tts_voices.join(",") : "";
+  document.getElementById("self-tts-language").value = status.tts_language || "";
   document.getElementById("self-tts-response-format").value = status.tts_response_format || "wav";
+  document.getElementById("self-tts-send-response-format").value = status.tts_send_response_format ? "true" : "false";
 }
 
 async function loadPersonalities() {
@@ -92,7 +94,9 @@ async function init() {
       self_tts_model: fieldValue("self-tts-model"),
       self_tts_voice: fieldValue("self-tts-voice"),
       self_tts_voices: fieldValue("self-tts-voices"),
+      self_tts_language: fieldValue("self-tts-language"),
       self_tts_response_format: fieldValue("self-tts-response-format"),
+      self_tts_send_response_format: fieldValue("self-tts-send-response-format"),
     };
     try {
       const data = await postJSON("/service_config", body);

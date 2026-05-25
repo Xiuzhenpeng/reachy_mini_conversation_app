@@ -24,6 +24,24 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     )
     parser.add_argument("--no-camera", default=False, action="store_true", help="Disable camera usage")
     parser.add_argument("--gradio", default=False, action="store_true", help="Open gradio interface")
+    parser.add_argument(
+        "--test-ui",
+        default=False,
+        action="store_true",
+        help="Launch the hardware-free Gradio test UI for local ASR/LLM/TTS services",
+    )
+    parser.add_argument(
+        "--server-name",
+        type=str,
+        default=None,
+        help="Optional Gradio server host for --test-ui, for example 0.0.0.0",
+    )
+    parser.add_argument(
+        "--server-port",
+        type=int,
+        default=None,
+        help="Optional Gradio server port for --test-ui",
+    )
     parser.add_argument("--debug", default=False, action="store_true", help="Enable debug logging")
     parser.add_argument(
         "--robot-name",

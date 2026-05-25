@@ -32,6 +32,12 @@ def update_chatbot(chatbot: List[Dict[str, Any]], response: Dict[str, Any]) -> L
 def main() -> None:
     """Entrypoint for the Reachy Mini conversation app."""
     args, _ = parse_args()
+    if args.test_ui:
+        from reachy_mini_conversation_app.gradio_test_ui import run_test_ui
+
+        setup_logger(args.debug)
+        run_test_ui(args)
+        return
     run(args)
 
 
@@ -256,8 +262,15 @@ class ReachyMiniConversationApp(ReachyMiniApp):  # type: ignore[misc]
         asyncio.set_event_loop(asyncio.new_event_loop())
 
         args, _ = parse_args()
-
         instance_path = self._get_instance_path().parent
+
+        if args.test_ui:
+            from reachy_mini_conversation_app.gradio_test_ui import run_test_ui
+
+            setup_logger(args.debug)
+            run_test_ui(args, instance_path=instance_path)
+            return
+
         run(
             args,
             robot=reachy_mini,
@@ -268,8 +281,12 @@ class ReachyMiniConversationApp(ReachyMiniApp):  # type: ignore[misc]
 
 
 if __name__ == "__main__":
-    app = ReachyMiniConversationApp()
-    try:
-        app.wrapped_run()
-    except KeyboardInterrupt:
-        app.stop()
+    parsed_args, _ = parse_args()
+    if parsed_args.test_ui:
+        main()
+    else:
+        app = ReachyMiniConversationApp()
+        try:
+            app.wrapped_run()
+        except KeyboardInterrupt:
+            app.stop()

@@ -394,10 +394,9 @@ class SelfHostedOpenAIHandler(ConversationHandler):
 
     async def _transcribe(self, pcm: NDArray[np.int16]) -> str:
         client = await self._client_or_create()
-        data: dict[str, str] = {
-            "model": config.SELF_ASR_MODEL,
-            "response_format": "json",
-        }
+        data: dict[str, str] = {}
+        if config.SELF_ASR_MODEL:
+            data["model"] = config.SELF_ASR_MODEL
         if config.SELF_ASR_LANGUAGE:
             data["language"] = config.SELF_ASR_LANGUAGE
         files = {"file": ("speech.wav", _wav_bytes(pcm, config.SELF_ASR_SAMPLE_RATE), "audio/wav")}
@@ -478,6 +477,7 @@ class SelfHostedOpenAIHandler(ConversationHandler):
             "model": config.SELF_LLM_MODEL,
             "messages": messages,
             "temperature": config.SELF_LLM_TEMPERATURE,
+            "stream": False,
         }
         if tools:
             payload["tools"] = tools
@@ -556,15 +556,21 @@ class SelfHostedOpenAIHandler(ConversationHandler):
 
     async def _synthesize(self, text: str) -> tuple[int, NDArray[np.int16]]:
         client = await self._client_or_create()
+        payload: dict[str, Any] = {
+            "input": text,
+            "voice": self.get_current_voice(),
+        }
+        if config.SELF_TTS_MODEL:
+            payload["model"] = config.SELF_TTS_MODEL
+        if config.SELF_TTS_LANGUAGE:
+            payload["language"] = config.SELF_TTS_LANGUAGE
+        if config.SELF_TTS_SEND_RESPONSE_FORMAT:
+            payload["response_format"] = config.SELF_TTS_RESPONSE_FORMAT
+
         response = await client.post(
             _endpoint(config.SELF_TTS_BASE_URL, "audio/speech"),
             headers={**_auth_headers(config.SELF_TTS_API_KEY), "Content-Type": "application/json"},
-            json={
-                "model": config.SELF_TTS_MODEL,
-                "input": text,
-                "voice": self.get_current_voice(),
-                "response_format": config.SELF_TTS_RESPONSE_FORMAT,
-            },
+            json=payload,
         )
         response.raise_for_status()
         return _decode_tts_audio(response.content, config.SELF_TTS_RESPONSE_FORMAT, config.SELF_TTS_SAMPLE_RATE)

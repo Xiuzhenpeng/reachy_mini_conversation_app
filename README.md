@@ -38,7 +38,93 @@ Conversational app for the Reachy Mini robot using self-hosted OpenAI-compatible
 
 ## Architecture
 
-The app follows a layered architecture connecting the user, your self-hosted OpenAI-compatible ASR/LLM/TTS services, tool handlers, motion control, camera capture, and robot hardware. The editable Mermaid source is in `docs/scheme.mmd`.
+The app follows a non-streaming turn pipeline connecting local audio capture, VAD, your self-hosted OpenAI-compatible ASR/LLM/TTS services, tool handlers, motion control, camera capture, and robot hardware. The editable Mermaid source is in `docs/scheme.mmd`.
+
+```mermaid
+flowchart TB
+    User(["User<br/>speaks and listens"]):::userStyle
+
+    subgraph Runtime["Reachy Mini Conversation App"]
+        direction TB
+        UI["Audio I/O<br/>Gradio microphone or Reachy recorder/player"]:::uiStyle
+        Handler["SelfHostedOpenAIHandler<br/>non-streaming turn pipeline"]:::coreStyle
+        VAD["Local VAD<br/>pre-roll, speech start/stop, utterance WAV"]:::coreStyle
+        History["Conversation state<br/>profile instructions + bounded history"]:::dataStyle
+        ToolLoop["Tool-call loop<br/>dispatch, append tool result, retry chat"]:::toolStyle
+        OutputQueue["Output queue<br/>transcripts + 200 ms audio chunks"]:::coreStyle
+    end
+
+    subgraph LocalServices["Local OpenAI-compatible services"]
+        direction TB
+        ASR["ASR proxy<br/>POST /v1/audio/transcriptions<br/>localhost:8092"]:::serviceStyle
+        LLM["LLM proxy<br/>POST /v1/chat/completions<br/>stream: false<br/>localhost:8001"]:::serviceStyle
+        TTS["TTS proxy<br/>POST /v1/audio/speech<br/>localhost:8091"]:::serviceStyle
+    end
+
+    subgraph Tools["Tool layer"]
+        direction TB
+        Dispatcher["Core/profile/external tool dispatcher"]:::toolStyle
+        CameraTool["camera tool<br/>latest JPEG as base64"]:::toolStyle
+        MotionTools["motion tools<br/>dance, move_head, head_tracking"]:::toolStyle
+        BgTools["background tool manager<br/>long-running system tools"]:::toolStyle
+    end
+
+    subgraph Robot["Reachy Mini hardware + workers"]
+        direction TB
+        CameraWorker["CameraWorker<br/>frame buffer + optional MediaPipe tracking"]:::hardwareStyle
+        Movement["MovementManager<br/>queued moves + tracking offsets"]:::hardwareStyle
+        Wobbler["HeadWobbler<br/>speech-reactive motion"]:::hardwareStyle
+        Speaker["Speaker / player"]:::hardwareStyle
+        Microphone["Microphone / recorder"]:::hardwareStyle
+    end
+
+    subgraph Config["Configuration"]
+        direction TB
+        Env[".env / settings UI<br/>SELF_ASR_* SELF_LLM_* SELF_TTS_*"]:::dataStyle
+        Profiles["profiles/*<br/>instructions.txt + tools.txt"]:::dataStyle
+    end
+
+    User -- voice --> Microphone
+    Microphone -- PCM frames --> UI
+    UI -- audio frames --> Handler
+    Handler -- normalize mono int16 --> VAD
+    VAD -- completed utterance WAV --> ASR
+    ASR -- transcript text --> Handler
+    Env -. endpoint/model/voice config .-> Handler
+    Profiles -. system prompt + enabled tools .-> History
+    Handler -- user transcript + history --> History
+    History -- messages JSON --> LLM
+    LLM -- assistant text or tool_calls --> Handler
+    Handler -- tool_calls --> ToolLoop
+    ToolLoop --> Dispatcher
+    Dispatcher --> CameraTool
+    Dispatcher --> MotionTools
+    Dispatcher --> BgTools
+    CameraWorker -- latest frame --> CameraTool
+    CameraTool -- sanitized tool result --> ToolLoop
+    CameraTool -. image_url data URI for visual question .-> LLM
+    MotionTools -- movement requests --> Movement
+    BgTools -- completion notification --> ToolLoop
+    ToolLoop -- tool result messages --> LLM
+    Handler -- final assistant text --> TTS
+    TTS -- WAV or raw PCM --> Handler
+    Handler -- transcript events + audio chunks --> OutputQueue
+    OutputQueue -- audio chunks --> UI
+    UI -- playback --> Speaker
+    Speaker -- sound --> User
+    Handler -- speech PCM for animation --> Wobbler
+    Wobbler -- speech offsets --> Movement
+    CameraWorker -- tracking offsets --> Movement
+    Movement -- motor commands --> RobotBody["Robot motors<br/>head, antennas, body yaw"]:::hardwareStyle
+
+    classDef userStyle fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef uiStyle fill:#b3e5fc,stroke:#0277bd,stroke-width:2px
+    classDef coreStyle fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    classDef serviceStyle fill:#e1bee7,stroke:#7b1fa2,stroke-width:2px
+    classDef toolStyle fill:#fffde7,stroke:#f9a825,stroke-width:2px
+    classDef hardwareStyle fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    classDef dataStyle fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+```
 
 ## Installation
 
@@ -120,8 +206,9 @@ Copy `.env.example` to `.env` and point the service URLs at your local or LAN en
 | `SELF_ASR_BASE_URL` / `SELF_ASR_API_KEY` / `SELF_ASR_MODEL` | Optional ASR endpoint, token, and model. |
 | `SELF_LLM_BASE_URL` / `SELF_LLM_API_KEY` / `SELF_LLM_MODEL` | Optional chat-completions endpoint, token, and model. |
 | `SELF_TTS_BASE_URL` / `SELF_TTS_API_KEY` / `SELF_TTS_MODEL` | Optional TTS endpoint, token, and model. |
-| `SELF_TTS_VOICE` / `SELF_TTS_VOICES` | Default voice and comma-separated voices exposed in the UI. |
+| `SELF_TTS_VOICE` / `SELF_TTS_VOICES` / `SELF_TTS_LANGUAGE` | Default voice, comma-separated UI voice list, and optional TTS language field. |
 | `SELF_TTS_RESPONSE_FORMAT` | TTS audio format. Use `wav` or `pcm`; `wav` is the default. |
+| `SELF_TTS_SEND_RESPONSE_FORMAT` | Whether to send `response_format` in the TTS JSON request. Defaults to `false` for local proxies that infer WAV output. |
 | `SELF_VAD_*` | Local VAD thresholds and timing used to decide when to call ASR. |
 
 ```env
@@ -129,8 +216,9 @@ SELF_OPENAI_BASE_URL=http://127.0.0.1:8000/v1
 SELF_OPENAI_API_KEY=DUMMY
 SELF_ASR_MODEL=whisper-1
 SELF_LLM_MODEL=local-model
-SELF_TTS_MODEL=tts-1
+SELF_TTS_MODEL=
 SELF_TTS_VOICE=default
+SELF_TTS_LANGUAGE=English
 ```
 
 ## Running the app
@@ -144,7 +232,7 @@ reachy-mini-conversation-app
 > [!TIP]
 > Make sure the Reachy Mini daemon is running before launching the app. If you see a `TimeoutError`, it means the daemon isn't started. See [Reachy Mini's SDK](https://github.com/pollen-robotics/reachy_mini/) for setup instructions.
 
-The app runs in console mode by default. Add `--gradio` to launch a web UI at http://127.0.0.1:7860/ (required for simulation mode). Camera and head-tracking options are described in the CLI table below.
+The app runs in console mode by default. Add `--gradio` to launch a web UI at http://127.0.0.1:7860/ (required for simulation mode). Without Reachy Mini hardware, use `--test-ui` to launch a separate local pipeline test page that skips robot, VAD, camera, and movement setup.
 
 ### CLI options
 
@@ -153,6 +241,9 @@ The app runs in console mode by default. Add `--gradio` to launch a web UI at ht
 | `--head-tracker {mediapipe}` | `None` | Enable MediaPipe head tracking when a camera is available. Requires the `mediapipe_vision` extra. |
 | `--no-camera` | `False` | Run without camera capture or head tracking. |
 | `--gradio` | `False` | Launch the Gradio web UI. Without this flag, runs in console mode. Required when running in simulation mode. |
+| `--test-ui` | `False` | Launch the hardware-free Gradio test UI for the local ASR/LLM/TTS services. |
+| `--server-name` | `None` | Optional Gradio host for `--test-ui`, for example `0.0.0.0`. |
+| `--server-port` | `None` | Optional Gradio port for `--test-ui`. |
 | `--robot-name` | `None` | Optional. Connect to a specific robot by name when running multiple daemons on the same subnet. See [Multiple robots on the same subnet](#advanced-features). |
 | `--debug` | `False` | Enable verbose logging for troubleshooting. |
 
@@ -167,7 +258,17 @@ reachy-mini-conversation-app --no-camera
 
 # Launch with Gradio web interface
 reachy-mini-conversation-app --gradio
+
+# Launch hardware-free local pipeline tests
+reachy-mini-conversation-app --test-ui --server-port 7860
 ```
+
+The test UI has two tabs:
+
+| Tab | Pipeline |
+|-----|----------|
+| `Text -> LLM -> TTS` | Text input directly calls `/v1/chat/completions`, then `/v1/audio/speech`. |
+| `Audio -> ASR -> LLM -> TTS` | Uploaded audio directly calls `/v1/audio/transcriptions`, then `/v1/chat/completions`, then `/v1/audio/speech`. |
 
 ## LLM tools exposed to the assistant
 
